@@ -1,0 +1,7 @@
+node_modules
+.env
+.DS_Store
+storage/clinic.db
+storage/uploads/*
+!storage/uploads/.gitkeep
+npm-debug.log*
