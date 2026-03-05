@@ -5,7 +5,10 @@ Aplicacao web para consultoria de skincare com:
 - formulario clinico enviado por link unico para paciente;
 - upload de fotos de rosto e de produtos;
 - area privada da profissional para ver respostas e imagens;
-- chat com LLM via API na area da profissional.
+- cadastro automatico de paciente com codigo sequencial (`0001`, `0002`...);
+- prontuario completo por paciente;
+- agenda com calendario mensal para marcar consultas;
+- chat com LLM via API com contexto global (pacientes, respostas e agenda).
 
 ## Requisitos
 
@@ -57,7 +60,9 @@ npm start
 3. Envia o link para paciente por WhatsApp, email etc.
 4. A paciente preenche o questionario e envia as fotos.
 5. Sua esposa abre o painel para ver respostas completas e imagens.
-6. Na tela de chat LLM, pode conversar com IA e opcionalmente vincular a conversa a um caso.
+6. Cada paciente recebe um codigo unico no prontuario.
+7. Na agenda, sua esposa marca consultas e acessa o prontuario clicando no nome da paciente.
+8. No chat LLM, pode conversar com IA usando dados globais da plataforma e focar em paciente/caso especifico.
 
 ## Banco e arquivos
 
@@ -69,4 +74,5 @@ npm start
 - O app cria um administrador inicial automaticamente se o banco estiver vazio.
 - O link do questionario e marcado como usado apos envio.
 - Por padrao, uploads aceitam apenas imagens (ate 10MB por arquivo).
+- O banco SQLite guarda pacientes, questionarios, agenda e historico do chat.
 - Para producao, recomenda-se colocar atras de HTTPS e definir um `SESSION_SECRET` forte.

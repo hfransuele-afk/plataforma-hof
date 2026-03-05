@@ -431,6 +431,135 @@ th {
   line-height: 1.45;
 }
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.stat-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  background: #fffdf9;
+  display: grid;
+  gap: 4px;
+}
+
+.stat-card span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.stat-card strong {
+  font-size: 1.3rem;
+}
+
+.patient-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #c79f8b;
+  background: rgba(173, 95, 66, 0.12);
+  color: #814932;
+  font-weight: 800;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+}
+
+.patient-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.patient-link:hover {
+  text-decoration: underline;
+}
+
+.msg-tag.patient {
+  background: rgba(111, 159, 137, 0.16);
+  color: #2f6450;
+}
+
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.calendar-nav h2 {
+  margin: 0;
+  text-transform: capitalize;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.calendar-weekdays span {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.calendar-cell {
+  min-height: 110px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px;
+  background: #fffdf9;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.calendar-cell.empty {
+  background: rgba(255, 253, 249, 0.35);
+  border-style: dashed;
+}
+
+.calendar-cell header {
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.calendar-events {
+  display: grid;
+  gap: 6px;
+}
+
+.calendar-event {
+  border: 1px solid #d7c4b6;
+  background: #fcf6f1;
+  border-radius: 10px;
+  padding: 6px;
+  color: inherit;
+  text-decoration: none;
+  display: grid;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.calendar-event:hover {
+  border-color: #c78f72;
+}
+
 @media (max-width: 760px) {
   .page-shell {
     margin-top: 14px;
@@ -447,6 +576,11 @@ th {
   }
 
   .option-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-grid,
+  .calendar-weekdays {
     grid-template-columns: 1fr;
   }
 }

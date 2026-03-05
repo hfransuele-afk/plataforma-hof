@@ -33,6 +33,7 @@ db.pragma('journal_mode = WAL');
 
 setupDatabase();
 seedDefaultAdmin();
+backfillLegacyPatients();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -93,22 +94,36 @@ function setupDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS patients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_code TEXT NOT NULL UNIQUE,
+      full_name TEXT NOT NULL,
+      email TEXT,
+      phone TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS patient_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token TEXT NOT NULL UNIQUE,
+      patient_id INTEGER,
       patient_name_hint TEXT,
       patient_email_hint TEXT,
       is_used INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      used_at TEXT
+      used_at TEXT,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
     );
 
     CREATE TABLE IF NOT EXISTS submissions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER,
       link_id INTEGER NOT NULL,
       token TEXT NOT NULL,
       data_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id),
       FOREIGN KEY(link_id) REFERENCES patient_links(id)
     );
 
@@ -123,17 +138,52 @@ function setupDatabase() {
       FOREIGN KEY(submission_id) REFERENCES submissions(id)
     );
 
+    CREATE TABLE IF NOT EXISTS appointments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      start_at TEXT NOT NULL,
+      end_at TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
+    );
+
     CREATE TABLE IF NOT EXISTS chat_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       admin_id INTEGER NOT NULL,
+      patient_id INTEGER,
       submission_id INTEGER,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       created_at TEXT NOT NULL,
       FOREIGN KEY(admin_id) REFERENCES admins(id),
+      FOREIGN KEY(patient_id) REFERENCES patients(id),
       FOREIGN KEY(submission_id) REFERENCES submissions(id)
     );
   `);
+
+  ensureColumn('patient_links', 'patient_id', 'patient_id INTEGER REFERENCES patients(id)');
+  ensureColumn('submissions', 'patient_id', 'patient_id INTEGER REFERENCES patients(id)');
+  ensureColumn('chat_messages', 'patient_id', 'patient_id INTEGER REFERENCES patients(id)');
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_code ON patients(patient_code);
+    CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(full_name);
+    CREATE INDEX IF NOT EXISTS idx_submissions_patient ON submissions(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_links_patient ON patient_links(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_appointments_patient ON appointments(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_appointments_start ON appointments(start_at);
+  `);
+}
+
+function ensureColumn(tableName, columnName, definitionSql) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const exists = columns.some((column) => column.name === columnName);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definitionSql}`);
+  }
 }
 
 function seedDefaultAdmin() {
@@ -157,6 +207,212 @@ function seedDefaultAdmin() {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toCodeNumber(value) {
+  return String(value).padStart(4, '0');
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return '-';
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleString('pt-BR');
+  }
+
+  return String(value);
+}
+
+function formatTime(value) {
+  if (!value) {
+    return '--:--';
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const fromString = String(value).split('T')[1];
+  return fromString ? fromString.slice(0, 5) : '--:--';
+}
+
+function monthKeyFromDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function parseMonthQuery(monthQuery) {
+  if (monthQuery && /^\d{4}-\d{2}$/.test(monthQuery)) {
+    const [yearRaw, monthRaw] = monthQuery.split('-');
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    if (year >= 2000 && month >= 1 && month <= 12) {
+      return new Date(year, month - 1, 1);
+    }
+  }
+
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function previousMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() - 1, 1);
+}
+
+function nextMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 1);
+}
+
+function buildMonthGrid(date) {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+
+  for (let i = 0; i < startWeekday; i += 1) {
+    cells.push(null);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    cells.push({ day, dateKey });
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push(null);
+  }
+
+  return cells;
+}
+
+function findPatientByEmail(email) {
+  if (!email) {
+    return null;
+  }
+
+  return db.prepare('SELECT * FROM patients WHERE LOWER(email) = LOWER(?) LIMIT 1').get(email);
+}
+
+function findPatientByNameAndPhone(fullName, phone) {
+  if (!fullName) {
+    return null;
+  }
+
+  if (phone) {
+    return db
+      .prepare('SELECT * FROM patients WHERE full_name = ? AND phone = ? ORDER BY id DESC LIMIT 1')
+      .get(fullName, phone);
+  }
+
+  return db
+    .prepare('SELECT * FROM patients WHERE full_name = ? ORDER BY id DESC LIMIT 1')
+    .get(fullName);
+}
+
+function createPatientCode() {
+  const row = db.prepare('SELECT MAX(id) AS max_id FROM patients').get();
+  const nextNumber = Number(row?.max_id || 0) + 1;
+  return toCodeNumber(nextNumber);
+}
+
+function getOrCreatePatientFromPayload(payload, explicitPatientId = null) {
+  const fullName = String(payload.nomeCompleto || '').trim();
+  const email = String(payload.email || '').trim().toLowerCase() || null;
+  const phone = String(payload.telefone || '').trim() || null;
+
+  if (!fullName) {
+    throw new Error('Nome da paciente é obrigatório para criar prontuário.');
+  }
+
+  let patient = null;
+  if (explicitPatientId) {
+    patient = db.prepare('SELECT * FROM patients WHERE id = ?').get(explicitPatientId);
+  }
+
+  if (!patient && email) {
+    patient = findPatientByEmail(email);
+  }
+
+  if (!patient) {
+    patient = findPatientByNameAndPhone(fullName, phone);
+  }
+
+  if (patient) {
+    db.prepare(
+      `
+        UPDATE patients
+        SET full_name = ?, email = ?, phone = ?, updated_at = ?
+        WHERE id = ?
+      `
+    ).run(fullName, email, phone, nowIso(), patient.id);
+
+    return patient.id;
+  }
+
+  const insertPatient = db.prepare(
+    `
+      INSERT INTO patients (patient_code, full_name, email, phone, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `
+  );
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const patientCode = createPatientCode();
+      const result = insertPatient.run(patientCode, fullName, email, phone, nowIso(), nowIso());
+      return Number(result.lastInsertRowid);
+    } catch (error) {
+      if (String(error.message || '').includes('UNIQUE constraint failed: patients.patient_code')) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error('Não foi possível criar código único da paciente.');
+}
+
+function backfillLegacyPatients() {
+  const legacy = db
+    .prepare(
+      `
+      SELECT s.id, s.link_id, s.data_json
+      FROM submissions s
+      WHERE s.patient_id IS NULL
+      ORDER BY s.id ASC
+      `
+    )
+    .all();
+
+  if (!legacy.length) {
+    return;
+  }
+
+  const tx = db.transaction(() => {
+    for (const item of legacy) {
+      let payload = {};
+      try {
+        payload = JSON.parse(item.data_json || '{}');
+      } catch (_error) {
+        payload = {};
+      }
+
+      if (!payload.nomeCompleto || !payload.email) {
+        continue;
+      }
+
+      const patientId = getOrCreatePatientFromPayload(payload);
+      db.prepare('UPDATE submissions SET patient_id = ? WHERE id = ?').run(patientId, item.id);
+      db.prepare('UPDATE patient_links SET patient_id = ? WHERE id = ? AND patient_id IS NULL').run(patientId, item.link_id);
+    }
+  });
+
+  tx();
 }
 
 function isAuthenticated(req) {
@@ -400,22 +656,38 @@ app.post('/logout', requireAuth, (req, res) => {
 });
 
 app.get('/admin', requireAuth, (req, res) => {
+  const counters = db
+    .prepare(
+      `
+      SELECT
+        (SELECT COUNT(*) FROM patients) AS total_patients,
+        (SELECT COUNT(*) FROM submissions) AS total_submissions,
+        (SELECT COUNT(*) FROM patient_links WHERE is_used = 0) AS pending_links,
+        (SELECT COUNT(*) FROM appointments WHERE start_at >= ?) AS upcoming_appointments
+      `
+    )
+    .get(nowIso());
+
   const rows = db
     .prepare(
       `
       SELECT
         l.id,
         l.token,
+        l.patient_id,
         l.patient_name_hint,
         l.patient_email_hint,
         l.created_at,
         l.is_used,
         s.id AS submission_id,
         s.created_at AS submitted_at,
-        json_extract(s.data_json, '$.nomeCompleto') AS nome_completo,
-        json_extract(s.data_json, '$.email') AS email_resposta
+        p.id AS resolved_patient_id,
+        p.patient_code,
+        COALESCE(p.full_name, json_extract(s.data_json, '$.nomeCompleto'), l.patient_name_hint) AS patient_name,
+        COALESCE(p.email, json_extract(s.data_json, '$.email'), l.patient_email_hint) AS patient_email
       FROM patient_links l
       LEFT JOIN submissions s ON s.link_id = l.id
+      LEFT JOIN patients p ON p.id = COALESCE(s.patient_id, l.patient_id)
       ORDER BY l.id DESC
       `
     )
@@ -425,16 +697,20 @@ app.get('/admin', requireAuth, (req, res) => {
     .map((row) => {
       const patientLink = `${BASE_URL}/paciente/${row.token}`;
       const status = row.is_used ? '<span class="chip done">Respondido</span>' : '<span class="chip pending">Aguardando</span>';
-      const patientName = row.nome_completo || row.patient_name_hint || '-';
-      const patientEmail = row.email_resposta || row.patient_email_hint || '-';
+      const patientName = row.patient_name || '-';
+      const patientEmail = row.patient_email || '-';
+      const code = row.patient_code ? toCodeNumber(row.patient_code) : '----';
+      const patientCell = row.resolved_patient_id
+        ? `<a class="patient-link" href="/admin/patients/${row.resolved_patient_id}"><span class="patient-code">${escapeHtml(code)}</span> ${escapeHtml(patientName)}</a>`
+        : `<span><span class="patient-code muted">${escapeHtml(code)}</span> ${escapeHtml(patientName)}</span>`;
       const actions = row.submission_id
-        ? `<a class="btn tiny" href="/admin/submissions/${row.submission_id}">Ver resposta</a>`
+        ? `<a class="btn tiny" href="/admin/submissions/${row.submission_id}">Abrir prontuário</a>`
         : '<span class="muted">Sem resposta</span>';
 
       return `
         <tr>
           <td>${status}</td>
-          <td>${escapeHtml(patientName)}</td>
+          <td>${patientCell}</td>
           <td>${escapeHtml(patientEmail)}</td>
           <td>
             <div class="link-inline">
@@ -454,6 +730,8 @@ app.get('/admin', requireAuth, (req, res) => {
         <h1>Respostas das pacientes</h1>
       </div>
       <div class="header-actions">
+        <a class="btn" href="/admin/patients">Pacientes</a>
+        <a class="btn" href="/admin/agenda">Agenda</a>
         <a class="btn" href="/admin/chat">Chat LLM</a>
         <form method="post" action="/logout">
           <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
@@ -461,6 +739,28 @@ app.get('/admin', requireAuth, (req, res) => {
         </form>
       </div>
     </header>
+
+    <section class="panel">
+      <h2>Visão geral</h2>
+      <div class="stats-grid">
+        <article class="stat-card">
+          <span>Total de pacientes</span>
+          <strong>${escapeHtml(counters.total_patients)}</strong>
+        </article>
+        <article class="stat-card">
+          <span>Questionários respondidos</span>
+          <strong>${escapeHtml(counters.total_submissions)}</strong>
+        </article>
+        <article class="stat-card">
+          <span>Links aguardando resposta</span>
+          <strong>${escapeHtml(counters.pending_links)}</strong>
+        </article>
+        <article class="stat-card">
+          <span>Consultas futuras</span>
+          <strong>${escapeHtml(counters.upcoming_appointments)}</strong>
+        </article>
+      </div>
+    </section>
 
     <section class="panel">
       <h2>Gerar link de questionário</h2>
@@ -512,13 +812,16 @@ app.post('/admin/links', requireAuth, (req, res) => {
   const token = crypto.randomBytes(18).toString('hex');
   const patientNameHint = String(req.body.patientNameHint || '').trim() || null;
   const patientEmailHint = String(req.body.patientEmailHint || '').trim().toLowerCase() || null;
+  const hintedPatient = patientEmailHint
+    ? findPatientByEmail(patientEmailHint)
+    : findPatientByNameAndPhone(patientNameHint, null);
 
   db.prepare(
     `
-      INSERT INTO patient_links (token, patient_name_hint, patient_email_hint, created_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO patient_links (token, patient_id, patient_name_hint, patient_email_hint, created_at)
+      VALUES (?, ?, ?, ?, ?)
     `
-  ).run(token, patientNameHint, patientEmailHint, nowIso());
+  ).run(token, hintedPatient?.id || null, patientNameHint, patientEmailHint, nowIso());
 
   res.redirect(`/admin?created=${encodeURIComponent(token)}`);
 });
@@ -639,11 +942,12 @@ app.post('/paciente/:token', (req, res) => {
     }
 
     const insertSubmission = db.prepare(
-      'INSERT INTO submissions (link_id, token, data_json, created_at) VALUES (?, ?, ?, ?)'
+      'INSERT INTO submissions (patient_id, link_id, token, data_json, created_at) VALUES (?, ?, ?, ?, ?)'
     );
 
     const tx = db.transaction(() => {
-      const result = insertSubmission.run(link.id, token, JSON.stringify(payload), nowIso());
+      const patientId = getOrCreatePatientFromPayload(payload, link.patient_id || null);
+      const result = insertSubmission.run(patientId, link.id, token, JSON.stringify(payload), nowIso());
       const submissionId = result.lastInsertRowid;
       const files = req.files || {};
 
@@ -663,7 +967,9 @@ app.post('/paciente/:token', (req, res) => {
         insertFile.run(submissionId, 'product', file.originalname, file.filename, file.mimetype || null, nowIso());
       }
 
-      db.prepare('UPDATE patient_links SET is_used = 1, used_at = ? WHERE id = ?').run(nowIso(), link.id);
+      db.prepare(
+        'UPDATE patient_links SET patient_id = ?, is_used = 1, used_at = ? WHERE id = ?'
+      ).run(patientId, nowIso(), link.id);
     });
 
     tx();
@@ -683,14 +989,387 @@ app.get('/obrigado', (_req, res) => {
   res.send(layout({ title: 'Obrigada', body }));
 });
 
+app.get('/admin/patients', requireAuth, (req, res) => {
+  const patients = db
+    .prepare(
+      `
+      SELECT
+        p.*,
+        (SELECT COUNT(*) FROM submissions s WHERE s.patient_id = p.id) AS submission_count,
+        (SELECT MAX(s.created_at) FROM submissions s WHERE s.patient_id = p.id) AS last_submission_at,
+        (SELECT COUNT(*) FROM appointments a WHERE a.patient_id = p.id) AS appointment_count
+      FROM patients p
+      ORDER BY p.id ASC
+      `
+    )
+    .all();
+
+  const rows = patients
+    .map(
+      (patient) => `
+        <tr>
+          <td><span class="patient-code">${escapeHtml(toCodeNumber(patient.patient_code))}</span></td>
+          <td><a class="patient-link" href="/admin/patients/${patient.id}">${escapeHtml(patient.full_name)}</a></td>
+          <td>${escapeHtml(patient.email || '-')}</td>
+          <td>${escapeHtml(patient.phone || '-')}</td>
+          <td>${escapeHtml(patient.submission_count)}</td>
+          <td>${escapeHtml(patient.appointment_count)}</td>
+          <td>${escapeHtml(formatDateTime(patient.last_submission_at))}</td>
+        </tr>
+      `
+    )
+    .join('');
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Pacientes</p>
+        <h1>Cadastro de pacientes</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin">Voltar ao painel</a>
+        <a class="btn primary" href="/admin/agenda">Abrir agenda</a>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>Telefone</th>
+              <th>Questionários</th>
+              <th>Consultas</th>
+              <th>Última resposta</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="7" class="muted">Nenhuma paciente cadastrada ainda.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+
+  res.send(layout({ title: 'Pacientes', body, userEmail: req.session.adminEmail }));
+});
+
+app.get('/admin/patients/:id', requireAuth, (req, res) => {
+  const patientId = Number(req.params.id);
+  const patient = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
+
+  if (!patient) {
+    res.status(404).send('Paciente não encontrada.');
+    return;
+  }
+
+  const submissions = db
+    .prepare(
+      `
+      SELECT
+        s.id,
+        s.created_at,
+        json_extract(s.data_json, '$.queixaPrincipal') AS queixa_principal,
+        json_extract(s.data_json, '$.expectativaConsultoria') AS expectativa
+      FROM submissions s
+      WHERE s.patient_id = ?
+      ORDER BY s.created_at DESC
+      `
+    )
+    .all(patientId);
+
+  const appointments = db
+    .prepare(
+      `
+      SELECT id, title, start_at, end_at, notes, status
+      FROM appointments
+      WHERE patient_id = ?
+      ORDER BY start_at DESC
+      LIMIT 200
+      `
+    )
+    .all(patientId);
+
+  const submissionsRows = submissions
+    .map(
+      (submission) => `
+        <tr>
+          <td>#${submission.id}</td>
+          <td>${escapeHtml(formatDateTime(submission.created_at))}</td>
+          <td>${safeFieldValue(submission.queixa_principal)}</td>
+          <td>${safeFieldValue(submission.expectativa)}</td>
+          <td><a class="btn tiny" href="/admin/submissions/${submission.id}">Abrir</a></td>
+        </tr>
+      `
+    )
+    .join('');
+
+  const appointmentsRows = appointments
+    .map(
+      (appointment) => `
+        <tr>
+          <td>${escapeHtml(formatDateTime(appointment.start_at))}</td>
+          <td>${escapeHtml(formatDateTime(appointment.end_at))}</td>
+          <td>${escapeHtml(appointment.title)}</td>
+          <td>${escapeHtml(appointment.status)}</td>
+          <td>${escapeHtml(appointment.notes || '-')}</td>
+        </tr>
+      `
+    )
+    .join('');
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Prontuário da paciente</p>
+        <h1><span class="patient-code">${escapeHtml(toCodeNumber(patient.patient_code))}</span> ${escapeHtml(patient.full_name)}</h1>
+        <p class="muted">${escapeHtml(patient.email || '-')} · ${escapeHtml(patient.phone || '-')}</p>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin/patients">Todas as pacientes</a>
+        <a class="btn" href="/admin/agenda">Agenda</a>
+        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Conversar com IA sobre esta paciente</a>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h2>Histórico de questionários</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Questionário</th>
+              <th>Data</th>
+              <th>Queixa principal</th>
+              <th>Expectativa</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${submissionsRows || '<tr><td colspan="5" class="muted">Ainda não há questionários para esta paciente.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Consultas na agenda</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Início</th>
+              <th>Fim</th>
+              <th>Título</th>
+              <th>Status</th>
+              <th>Observações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${appointmentsRows || '<tr><td colspan="5" class="muted">Nenhuma consulta marcada.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+
+  res.send(layout({ title: `Prontuário ${patient.full_name}`, body, userEmail: req.session.adminEmail }));
+});
+
+app.get('/admin/agenda', requireAuth, (req, res) => {
+  const monthDate = parseMonthQuery(String(req.query.month || ''));
+  const monthKey = monthKeyFromDate(monthDate);
+  const prevMonthKey = monthKeyFromDate(previousMonth(monthDate));
+  const nextMonthKey = monthKeyFromDate(nextMonth(monthDate));
+  const monthLabel = monthDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+  const appointments = db
+    .prepare(
+      `
+      SELECT
+        a.*,
+        p.full_name,
+        p.patient_code
+      FROM appointments a
+      JOIN patients p ON p.id = a.patient_id
+      WHERE substr(a.start_at, 1, 7) = ?
+      ORDER BY a.start_at ASC
+      `
+    )
+    .all(monthKey);
+
+  const patients = db
+    .prepare('SELECT id, patient_code, full_name FROM patients ORDER BY id ASC')
+    .all();
+
+  const eventsByDay = new Map();
+  for (const item of appointments) {
+    const key = String(item.start_at || '').slice(0, 10);
+    if (!eventsByDay.has(key)) {
+      eventsByDay.set(key, []);
+    }
+    eventsByDay.get(key).push(item);
+  }
+
+  const calendarCells = buildMonthGrid(monthDate)
+    .map((cell) => {
+      if (!cell) {
+        return '<article class="calendar-cell empty"></article>';
+      }
+
+      const events = eventsByDay.get(cell.dateKey) || [];
+      const eventsHtml = events
+        .map(
+          (event) => `
+            <a class="calendar-event" href="/admin/patients/${event.patient_id}">
+              <span>${escapeHtml(formatTime(event.start_at))}</span>
+              <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong>
+              <span>${escapeHtml(event.full_name)}</span>
+            </a>
+          `
+        )
+        .join('');
+
+      return `
+        <article class="calendar-cell">
+          <header>${cell.day}</header>
+          <div class="calendar-events">
+            ${eventsHtml || '<span class="muted">Sem consulta</span>'}
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+
+  const patientOptions = patients
+    .map(
+      (patient) =>
+        `<option value="${patient.id}">${escapeHtml(toCodeNumber(patient.patient_code))} - ${escapeHtml(patient.full_name)}</option>`
+    )
+    .join('');
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Agenda clínica</p>
+        <h1>Calendário de consultas</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin">Voltar ao painel</a>
+        <a class="btn" href="/admin/patients">Pacientes</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.created ? 'Consulta agendada com sucesso.' : null, 'success')}
+    ${renderAlert(req.query.error || null, 'error')}
+
+    <section class="panel">
+      <div class="calendar-nav">
+        <a class="btn" href="/admin/agenda?month=${escapeHtml(prevMonthKey)}">Mês anterior</a>
+        <h2>${escapeHtml(monthLabel)}</h2>
+        <a class="btn" href="/admin/agenda?month=${escapeHtml(nextMonthKey)}">Próximo mês</a>
+      </div>
+      <div class="calendar-weekdays">
+        <span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span>
+      </div>
+      <div class="calendar-grid">
+        ${calendarCells}
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Marcar nova consulta</h2>
+      <form class="form-stack" method="post" action="/admin/agenda">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+        <label class="field">
+          <span>Paciente</span>
+          <select name="patientId" required>
+            <option value="">Selecione uma paciente</option>
+            ${patientOptions}
+          </select>
+        </label>
+        <label class="field">
+          <span>Título</span>
+          <input type="text" name="title" placeholder="Consulta de retorno" required>
+        </label>
+        <label class="field">
+          <span>Início</span>
+          <input type="datetime-local" name="startAt" required>
+        </label>
+        <label class="field">
+          <span>Fim (opcional)</span>
+          <input type="datetime-local" name="endAt">
+        </label>
+        <label class="field">
+          <span>Observações</span>
+          <textarea name="notes" rows="3" placeholder="Ex.: revisar rotina e reação ao retinol"></textarea>
+        </label>
+        <button class="btn primary" type="submit">Salvar consulta</button>
+      </form>
+    </section>
+  `;
+
+  res.send(layout({ title: 'Agenda', body, userEmail: req.session.adminEmail }));
+});
+
+app.post('/admin/agenda', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const patientId = Number(req.body.patientId || 0);
+  const title = String(req.body.title || '').trim();
+  const startAt = String(req.body.startAt || '').trim();
+  const endAtRaw = String(req.body.endAt || '').trim();
+  const endAt = endAtRaw || null;
+  const notes = String(req.body.notes || '').trim() || null;
+  const returnMonth = String(req.body.returnMonth || '').trim();
+  const redirectMonth = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
+
+  if (!patientId || !title || !startAt) {
+    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha paciente, título e horário de início.')}`);
+    return;
+  }
+
+  const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
+  if (!patient) {
+    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Paciente inválida para agendamento.')}`);
+    return;
+  }
+
+  db.prepare(
+    `
+      INSERT INTO appointments (patient_id, title, start_at, end_at, notes, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'scheduled', ?)
+    `
+  ).run(patientId, title, startAt, endAt, notes, nowIso());
+
+  const targetMonth = String(startAt).slice(0, 7);
+  const monthToOpen = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : redirectMonth;
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(monthToOpen)}&created=1`);
+});
+
 app.get('/admin/submissions/:id', requireAuth, (req, res) => {
   const submissionId = Number(req.params.id);
   const submission = db
     .prepare(
       `
-      SELECT s.*, l.patient_name_hint, l.patient_email_hint
+      SELECT
+        s.*,
+        l.patient_name_hint,
+        l.patient_email_hint,
+        p.id AS patient_id,
+        p.patient_code,
+        p.full_name AS patient_full_name,
+        p.email AS patient_email
       FROM submissions s
       JOIN patient_links l ON l.id = s.link_id
+      LEFT JOIN patients p ON p.id = s.patient_id
       WHERE s.id = ?
       `
     )
@@ -765,12 +1444,16 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
     <header class="panel header-panel">
       <div>
         <p class="eyebrow">Resposta enviada em ${escapeHtml(new Date(submission.created_at).toLocaleString('pt-BR'))}</p>
-        <h1>${escapeHtml(data.nomeCompleto || submission.patient_name_hint || 'Paciente')}</h1>
-        <p class="muted">${escapeHtml(data.email || submission.patient_email_hint || '-')}</p>
+        <h1>
+          ${submission.patient_code ? `<span class="patient-code">${escapeHtml(toCodeNumber(submission.patient_code))}</span>` : ''}
+          ${escapeHtml(submission.patient_full_name || data.nomeCompleto || submission.patient_name_hint || 'Paciente')}
+        </h1>
+        <p class="muted">${escapeHtml(submission.patient_email || data.email || submission.patient_email_hint || '-')}</p>
       </div>
       <div class="header-actions">
         <a class="btn" href="/admin">Voltar ao painel</a>
-        <a class="btn primary" href="/admin/chat?submissionId=${submissionId}">Conversar com IA sobre este caso</a>
+        ${submission.patient_id ? `<a class="btn" href="/admin/patients/${submission.patient_id}">Prontuário da paciente</a>` : ''}
+        <a class="btn primary" href="/admin/chat?submissionId=${submissionId}&patientId=${submission.patient_id || ''}">Conversar com IA sobre este caso</a>
       </div>
     </header>
 
@@ -870,24 +1553,44 @@ app.get('/admin/file/:id', requireAuth, (req, res) => {
 
 app.get('/admin/chat', requireAuth, (req, res) => {
   const selectedSubmissionId = Number(req.query.submissionId || 0) || null;
+  const selectedPatientId = Number(req.query.patientId || 0) || null;
 
   const submissions = db
     .prepare(
       `
       SELECT
         s.id,
+        s.patient_id,
         s.created_at,
+        p.patient_code,
+        p.full_name AS patient_name,
         json_extract(s.data_json, '$.nomeCompleto') AS nome,
         json_extract(s.data_json, '$.queixaPrincipal') AS queixa
       FROM submissions s
+      LEFT JOIN patients p ON p.id = s.patient_id
       ORDER BY s.id DESC
       LIMIT 200
       `
     )
     .all();
 
+  const patients = db
+    .prepare('SELECT id, patient_code, full_name FROM patients ORDER BY id ASC')
+    .all();
+
   const messages = db
-    .prepare('SELECT * FROM chat_messages ORDER BY id ASC LIMIT 200')
+    .prepare(
+      `
+      SELECT
+        m.*,
+        p.patient_code,
+        p.full_name AS patient_name
+      FROM chat_messages m
+      LEFT JOIN patients p ON p.id = m.patient_id
+      ORDER BY m.id ASC
+      LIMIT 200
+      `
+    )
     .all();
 
   const messagesHtml = messages
@@ -896,11 +1599,15 @@ app.get('/admin/chat', requireAuth, (req, res) => {
       const submissionTag = msg.submission_id
         ? `<span class="msg-tag">Caso #${msg.submission_id}</span>`
         : '';
+      const patientTag = msg.patient_id
+        ? `<span class="msg-tag patient">Paciente ${escapeHtml(toCodeNumber(msg.patient_code || msg.patient_id))} - ${escapeHtml(msg.patient_name || '')}</span>`
+        : '';
       return `
         <article class="chat-message ${cssRole}">
           <header>
             <strong>${msg.role === 'assistant' ? 'LLM' : 'Você'}</strong>
             ${submissionTag}
+            ${patientTag}
             <span>${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
           </header>
           <p>${escapeHtml(msg.content)}</p>
@@ -911,9 +1618,17 @@ app.get('/admin/chat', requireAuth, (req, res) => {
 
   const options = submissions
     .map((item) => {
-      const labelName = item.nome || `Caso ${item.id}`;
+      const labelName = item.patient_name || item.nome || `Caso ${item.id}`;
+      const codeText = item.patient_code ? toCodeNumber(item.patient_code) : '----';
       const selected = selectedSubmissionId === item.id ? 'selected' : '';
-      return `<option value="${item.id}" ${selected}>#${item.id} - ${escapeHtml(labelName)}</option>`;
+      return `<option value="${item.id}" ${selected}>#${item.id} - ${escapeHtml(codeText)} ${escapeHtml(labelName)}</option>`;
+    })
+    .join('');
+
+  const patientOptions = patients
+    .map((item) => {
+      const selected = selectedPatientId === item.id ? 'selected' : '';
+      return `<option value="${item.id}" ${selected}>${escapeHtml(toCodeNumber(item.patient_code))} - ${escapeHtml(item.full_name)}</option>`;
     })
     .join('');
 
@@ -922,7 +1637,7 @@ app.get('/admin/chat', requireAuth, (req, res) => {
       <div>
         <p class="eyebrow">Assistente com LLM via API</p>
         <h1>Chat clínico</h1>
-        <p class="muted">Use para interpretar respostas e montar recomendações preliminares.</p>
+        <p class="muted">A LLM recebe contexto global da plataforma (pacientes, respostas e agenda) para raciocinar com base completa.</p>
       </div>
       <div class="header-actions">
         <a class="btn" href="/admin">Voltar ao painel</a>
@@ -938,6 +1653,13 @@ app.get('/admin/chat', requireAuth, (req, res) => {
 
       <form class="form-stack" method="post" action="/admin/chat">
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <label class="field">
+          <span>Associar a uma paciente (opcional)</span>
+          <select name="patientId">
+            <option value="">Sem paciente específica</option>
+            ${patientOptions}
+          </select>
+        </label>
         <label class="field">
           <span>Associar a um caso (opcional)</span>
           <select name="submissionId">
@@ -965,41 +1687,147 @@ app.post('/admin/chat', requireAuth, async (req, res) => {
 
   const message = String(req.body.message || '').trim();
   const submissionId = Number(req.body.submissionId || 0) || null;
+  let patientId = Number(req.body.patientId || 0) || null;
 
   if (!message) {
     res.redirect('/admin/chat?error=Digite uma mensagem');
     return;
   }
 
+  if (!patientId && submissionId) {
+    const fromSubmission = db.prepare('SELECT patient_id FROM submissions WHERE id = ?').get(submissionId);
+    patientId = fromSubmission?.patient_id || null;
+  }
+
   db.prepare(
     `
-    INSERT INTO chat_messages (admin_id, submission_id, role, content, created_at)
-    VALUES (?, ?, 'user', ?, ?)
+    INSERT INTO chat_messages (admin_id, patient_id, submission_id, role, content, created_at)
+    VALUES (?, ?, ?, 'user', ?, ?)
     `
-  ).run(req.session.adminId, submissionId, message, nowIso());
+  ).run(req.session.adminId, patientId, submissionId, message, nowIso());
 
   try {
-    const assistantReply = await callLlm(message, submissionId);
+    const assistantReply = await callLlm(message, submissionId, patientId);
     db.prepare(
       `
-      INSERT INTO chat_messages (admin_id, submission_id, role, content, created_at)
-      VALUES (?, ?, 'assistant', ?, ?)
+      INSERT INTO chat_messages (admin_id, patient_id, submission_id, role, content, created_at)
+      VALUES (?, ?, ?, 'assistant', ?, ?)
       `
-    ).run(req.session.adminId, submissionId, assistantReply, nowIso());
+    ).run(req.session.adminId, patientId, submissionId, assistantReply, nowIso());
   } catch (error) {
     db.prepare(
       `
-      INSERT INTO chat_messages (admin_id, submission_id, role, content, created_at)
-      VALUES (?, ?, 'assistant', ?, ?)
+      INSERT INTO chat_messages (admin_id, patient_id, submission_id, role, content, created_at)
+      VALUES (?, ?, ?, 'assistant', ?, ?)
       `
-    ).run(req.session.adminId, submissionId, `Erro ao consultar LLM: ${error.message}`, nowIso());
+    ).run(req.session.adminId, patientId, submissionId, `Erro ao consultar LLM: ${error.message}`, nowIso());
   }
 
-  const qs = submissionId ? `?submissionId=${submissionId}` : '';
+  const queryParts = [];
+  if (submissionId) {
+    queryParts.push(`submissionId=${encodeURIComponent(submissionId)}`);
+  }
+  if (patientId) {
+    queryParts.push(`patientId=${encodeURIComponent(patientId)}`);
+  }
+  const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
   res.redirect(`/admin/chat${qs}`);
 });
 
-async function callLlm(currentMessage, submissionId) {
+function buildGlobalKnowledgeBase() {
+  const patients = db
+    .prepare('SELECT id, patient_code, full_name, email, phone, created_at, updated_at FROM patients ORDER BY id ASC')
+    .all();
+
+  const submissions = db
+    .prepare('SELECT id, patient_id, link_id, created_at, data_json FROM submissions ORDER BY id ASC')
+    .all()
+    .map((item) => {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(item.data_json || '{}');
+      } catch (_error) {
+        parsed = {};
+      }
+      return {
+        id: item.id,
+        patient_id: item.patient_id,
+        link_id: item.link_id,
+        created_at: item.created_at,
+        answers: parsed
+      };
+    });
+
+  const appointments = db
+    .prepare(
+      `
+      SELECT
+        a.id,
+        a.patient_id,
+        a.title,
+        a.start_at,
+        a.end_at,
+        a.notes,
+        a.status,
+        p.patient_code,
+        p.full_name
+      FROM appointments a
+      LEFT JOIN patients p ON p.id = a.patient_id
+      ORDER BY a.start_at ASC
+      `
+    )
+    .all();
+
+  const payload = {
+    generated_at: nowIso(),
+    totals: {
+      patients: patients.length,
+      submissions: submissions.length,
+      appointments: appointments.length
+    },
+    patients,
+    submissions,
+    appointments
+  };
+
+  let json = JSON.stringify(payload);
+  if (json.length <= 180000) {
+    return json;
+  }
+
+  // Fallback de segurança para evitar payload exagerado em bases muito grandes.
+  const compact = {
+    generated_at: nowIso(),
+    totals: payload.totals,
+    patients: patients.map((p) => ({
+      id: p.id,
+      patient_code: p.patient_code,
+      full_name: p.full_name,
+      email: p.email,
+      phone: p.phone
+    })),
+    submissions: submissions.map((s) => ({
+      id: s.id,
+      patient_id: s.patient_id,
+      created_at: s.created_at,
+      queixaPrincipal: s.answers.queixaPrincipal || null,
+      expectativaConsultoria: s.answers.expectativaConsultoria || null
+    })),
+    appointments: appointments.map((a) => ({
+      id: a.id,
+      patient_id: a.patient_id,
+      patient_code: a.patient_code,
+      patient_name: a.full_name,
+      title: a.title,
+      start_at: a.start_at,
+      status: a.status
+    }))
+  };
+
+  return JSON.stringify(compact);
+}
+
+async function callLlm(currentMessage, submissionId, patientId) {
   const apiUrl = process.env.LLM_API_URL || 'https://api.openai.com/v1/chat/completions';
   const apiKey = process.env.LLM_API_KEY;
   const model = process.env.LLM_MODEL || 'gpt-4.1-mini';
@@ -1009,11 +1837,26 @@ async function callLlm(currentMessage, submissionId) {
   }
 
   const recentMessages = db
-    .prepare('SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 12')
+    .prepare('SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 16')
     .all()
     .reverse();
 
   const contextBlocks = [];
+  const knowledgeBase = buildGlobalKnowledgeBase();
+
+  contextBlocks.push('Base global da plataforma em JSON (pacientes, respostas e agenda):');
+  contextBlocks.push(knowledgeBase);
+
+  if (patientId) {
+    const patient = db
+      .prepare('SELECT id, patient_code, full_name, email, phone FROM patients WHERE id = ?')
+      .get(patientId);
+
+    if (patient) {
+      contextBlocks.push('Paciente selecionada para foco:');
+      contextBlocks.push(JSON.stringify(patient));
+    }
+  }
 
   if (submissionId) {
     const submission = db
@@ -1038,7 +1881,7 @@ async function callLlm(currentMessage, submissionId) {
           return `- ${label}: ${normalized}`;
         });
 
-      contextBlocks.push(`Caso selecionado #${submission.id}`);
+      contextBlocks.push(`Caso selecionado #${submission.id} para foco:`);
       contextBlocks.push(`Fotos do rosto enviadas: ${submission.qtd_face}`);
       contextBlocks.push(`Fotos de produtos enviadas: ${submission.qtd_produtos}`);
       contextBlocks.push('Resumo das respostas:');
@@ -1049,6 +1892,7 @@ async function callLlm(currentMessage, submissionId) {
   const systemPrompt = [
     'Você é uma assistente de suporte para consultoria de skincare.',
     'Responda em português do Brasil.',
+    'Você deve usar toda a base de dados enviada para raciocinar, cruzar padrões e justificar respostas com dados.',
     'Seja objetiva, segura e ética; nunca substitua diagnóstico médico.',
     'Quando houver risco clínico (alergia, reação intensa, suspeita de doença), oriente procurar dermatologista.'
   ].join(' ');

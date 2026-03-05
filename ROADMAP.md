@@ -18,20 +18,25 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
 - Upload adicional de imagens pela profissional no caso.
 - Chat da área privada integrado a API LLM (OpenAI-compatible).
 - Contexto do caso enviado ao chat LLM quando selecionado.
+- Cadastro de paciente consolidado em banco com código sequencial (`0001`, `0002`...).
+- Prontuário individual por paciente com histórico de questionários e consultas.
+- Agenda clínica com calendário mensal e criação de consultas.
+- Clique na paciente da agenda levando direto ao prontuário.
+- Chat LLM com contexto global da plataforma (pacientes, respostas e agenda).
 - README com instruções de setup e execução.
 
 ### Em andamento
-- Ajustes finos de operação local (ambiente do usuário com limitações de watch/porta).
+- Deploy em ambiente público com HTTPS e domínio.
 
 ### Próximos passos (prioridade)
-1. Deploy em ambiente público com HTTPS e domínio.
-2. Configurar backup automatizado do SQLite e pasta de uploads.
-3. Definir fluxo de recuperação de senha para a profissional.
-4. Melhorar permissões e trilha de auditoria (logs de acesso e ações).
-5. Adicionar exportação de resposta em PDF para cada caso.
-6. Criar área de configurações (marca, texto, termos, modelo da LLM).
-7. Adicionar múltiplos usuários (se a clínica crescer).
-8. Adicionar termos LGPD e política de retenção de dados.
+1. Configurar backup automatizado do SQLite e pasta de uploads.
+2. Definir fluxo de recuperação de senha para a profissional.
+3. Melhorar permissões e trilha de auditoria (logs de acesso e ações).
+4. Adicionar exportação de resposta em PDF para cada caso.
+5. Criar área de configurações (marca, texto, termos, modelo da LLM).
+6. Adicionar múltiplos usuários (se a clínica crescer).
+7. Adicionar termos LGPD e política de retenção de dados.
+8. Evoluir agenda com confirmação, remarcação e cancelamento.
 
 ## Plano de Entregas
 
