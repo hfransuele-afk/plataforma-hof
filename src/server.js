@@ -15,6 +15,7 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const storageDir = path.join(__dirname, '..', 'storage');
 const uploadDir = path.join(storageDir, 'uploads');
@@ -38,6 +39,9 @@ backfillLegacyPatients();
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.json({ limit: '2mb' }));
+if (IS_PRODUCTION) {
+  app.set('trust proxy', 1);
+}
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'change-me-session-secret',
@@ -46,6 +50,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
+      secure: IS_PRODUCTION,
       maxAge: 1000 * 60 * 60 * 12
     }
   })
@@ -585,6 +590,16 @@ function renderHome(req) {
 
   return layout({ title: 'Plataforma Clínica', body, userEmail: req.session.adminEmail || null });
 }
+
+app.get('/healthz', (_req, res) => {
+  const dbCheck = db.prepare('SELECT 1 AS ok').get();
+  res.status(200).json({
+    status: 'ok',
+    app: 'plataforma-fran',
+    timestamp: nowIso(),
+    database: dbCheck?.ok === 1 ? 'ok' : 'error'
+  });
+});
 
 app.get('/', (req, res) => {
   if (isAuthenticated(req)) {

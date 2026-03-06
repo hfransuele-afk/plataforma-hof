@@ -62,6 +62,7 @@ Importante: GitHub Pages não executa backend Node.js, então login, banco, uplo
 ## Deploy real (Render)
 
 Arquivo pronto: `render.yaml`.
+Guia completo: `DEPLOY.md`.
 
 Passos:
 1. Criar novo Blueprint no Render apontando para este repositório.
