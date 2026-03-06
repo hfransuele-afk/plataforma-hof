@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: codigo-da-beleza-unica
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 24.13.1
+      - key: PORT
+        value: 10000
+      - key: BASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: LLM_API_URL
+        value: https://api.openai.com/v1/chat/completions
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gpt-4.1-mini
+    disk:
+      name: plataforma-storage
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1

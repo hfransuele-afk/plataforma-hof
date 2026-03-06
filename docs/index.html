@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Código da Beleza Única - Preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=Manrope:wght@400;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bg: #f4eee6;
+        --surface: rgba(255, 250, 245, 0.95);
+        --line: #d3c2b1;
+        --text: #2f2520;
+        --muted: #6d5b4f;
+        --accent: #ad5f42;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: 'Manrope', sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at top left, #ead9cd 0%, #f4eee6 34%, #f2ebe3 65%, #ede4dc 100%);
+      }
+      main {
+        width: min(980px, 92vw);
+        margin: 28px auto;
+        display: grid;
+        gap: 16px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 24px;
+      }
+      h1, h2 { font-family: 'Marcellus', serif; margin: 0 0 8px; }
+      p { margin: 0; line-height: 1.5; color: var(--muted); }
+      .eyebrow { text-transform: uppercase; letter-spacing: .11em; font-size: .78rem; font-weight: 700; margin-bottom: 10px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+      .pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 10px;
+        font-size: .84rem;
+        background: #fffdf9;
+      }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+        border-radius: 12px;
+        padding: 10px 14px;
+        border: 1px solid #9f593f;
+        background: linear-gradient(120deg, var(--accent), #bf775b);
+        color: #fff;
+        font-weight: 700;
+      }
+      .small { font-size: .84rem; }
+      code { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 2px 6px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <p class="eyebrow">Código da Beleza Única</p>
+        <h1>Preview no GitHub Pages</h1>
+        <p>Este link é apenas uma vitrine estática. A plataforma completa (login, banco, agenda, chat LLM, prontuário) precisa de servidor Node.js com banco persistente.</p>
+      </section>
+
+      <section class="card">
+        <h2>Funcionalidades implementadas no projeto</h2>
+        <div class="grid" style="margin-top:10px;">
+          <div class="pill">Formulário por link para paciente</div>
+          <div class="pill">Área privada da profissional</div>
+          <div class="pill">Pacientes com código 0001, 0002...</div>
+          <div class="pill">Prontuário por paciente</div>
+          <div class="pill">Agenda com calendário</div>
+          <div class="pill">Chat com LLM e contexto global</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Próximo passo para produção</h2>
+        <p>Deploy recomendado em Render/Railway/Fly com disco persistente para <code>storage/clinic.db</code> e <code>storage/uploads</code>.</p>
+        <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
+          <a class="button" href="https://github.com/vertixmkt/C-digo-da-Beleza-nica" target="_blank" rel="noreferrer">Abrir repositório</a>
+        </div>
+        <p class="small" style="margin-top:10px;">Se você quiser, eu executo o deploy real em seguida e te entrego o link funcional da plataforma.</p>
+      </section>
+    </main>
+  </body>
+</html>

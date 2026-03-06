@@ -53,6 +53,21 @@ npm start
 - Home: `http://localhost:3000`
 - Login profissional: `http://localhost:3000/login`
 
+## Preview no GitHub Pages
+
+Este repositório publica um preview estático em `docs/` pelo workflow `.github/workflows/pages.yml`.
+
+Importante: GitHub Pages não executa backend Node.js, então login, banco, uploads, agenda e chat LLM não funcionam no Pages.
+
+## Deploy real (Render)
+
+Arquivo pronto: `render.yaml`.
+
+Passos:
+1. Criar novo Blueprint no Render apontando para este repositório.
+2. Definir variáveis `BASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `LLM_API_KEY`.
+3. Publicar serviço web com disco persistente montado em `storage/`.
+
 ## Fluxo de uso
 
 1. Sua esposa entra na area privada.
