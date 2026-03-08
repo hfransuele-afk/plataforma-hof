@@ -20,10 +20,10 @@ echo "[deploy] Instalando dependências..."
 npm install --production
 
 echo "[deploy] Reiniciando aplicação..."
-pm2 restart "$APP_NAME"
+sudo -u appuser pm2 restart "$APP_NAME"
 
 echo "[deploy] Status atual:"
-pm2 status "$APP_NAME"
+sudo -u appuser pm2 status "$APP_NAME"
 
 echo ""
 echo "✅ Deploy concluído!"
