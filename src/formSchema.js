@@ -74,8 +74,8 @@ const formSections = [
       },
       {
         name: 'tipoCiclo',
-        label: 'Seu ciclo é',
-        type: 'radio',
+        label: 'Seu ciclo é (pode marcar mais de uma)',
+        type: 'checkbox-group',
         options: ['Regular', 'Irregular', 'Uso anticoncepcional', 'DIU hormonal', 'DIU de cobre', 'Não menstruo']
       },
       {

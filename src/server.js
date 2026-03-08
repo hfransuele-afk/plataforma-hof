@@ -498,6 +498,17 @@ function verifyCsrf(req) {
   return token && token === req.session.csrfToken;
 }
 
+// CSRF estático para formulário público da paciente (sobrevive a restarts do servidor)
+function patientCsrfToken(linkToken) {
+  const secret = process.env.SESSION_SECRET || 'dev-secret';
+  return crypto.createHmac('sha256', secret).update(String(linkToken)).digest('hex');
+}
+
+function verifyPatientCsrf(req, linkToken) {
+  const submitted = req.body?._csrf;
+  return submitted && submitted === patientCsrfToken(linkToken);
+}
+
 function escapeHtml(value) {
   const text = String(value ?? '');
   return text
@@ -963,7 +974,7 @@ app.get('/paciente/:token', (req, res) => {
     </section>
 
     <form class="panel form-stack" method="post" action="/paciente/${escapeHtml(token)}" enctype="multipart/form-data">
-      <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+      <input type="hidden" name="_csrf" value="${escapeHtml(patientCsrfToken(token))}">
       ${sectionsHtml}
 
       <section class="section-block" id="fotos">
@@ -1003,12 +1014,24 @@ app.post('/paciente/:token', (req, res) => {
       return;
     }
 
-    if (!verifyCsrf(req)) {
-      res.status(403).send('CSRF inválido.');
+    const token = String(req.params.token || '');
+
+    if (!verifyPatientCsrf(req, token)) {
+      res.status(403).send(
+        layout({
+          title: 'Sessão expirada',
+          body: `
+            <section class="panel" style="text-align:center;max-width:480px;margin:0 auto;">
+              <h2>Sessão expirada</h2>
+              <p>O formulário ficou aberto por muito tempo e a sessão expirou.</p>
+              <p>Por favor, <a href="/paciente/${escapeHtml(token)}">clique aqui para recarregar</a> e tente novamente.<br>
+              Seus dados <strong>não foram perdidos</strong> — basta preencher novamente.</p>
+            </section>
+          `
+        })
+      );
       return;
     }
-
-    const token = String(req.params.token || '');
     const link = db.prepare('SELECT * FROM patient_links WHERE token = ?').get(token);
 
     if (!link) {
