@@ -36,6 +36,7 @@ setupDatabase();
 seedDefaultAdmin();
 backfillLegacyPatients();
 ensureAppointmentPatientNullable();
+ensureAppointmentValueColumn();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -232,6 +233,13 @@ function ensureAppointmentPatientNullable() {
   `);
 }
 
+function ensureAppointmentValueColumn() {
+  const cols = db.prepare('PRAGMA table_info(appointments)').all();
+  if (!cols.some((c) => c.name === 'value')) {
+    db.exec('ALTER TABLE appointments ADD COLUMN value REAL');
+  }
+}
+
 function seedDefaultAdmin() {
   const count = db.prepare('SELECT COUNT(*) AS total FROM admins').get().total;
   if (count > 0) {
@@ -295,6 +303,11 @@ function formatTime(value) {
 
 function monthKeyFromDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatBRL(value) {
+  if (value == null || value === '' || isNaN(Number(value))) return '—';
+  return Number(value).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function parseMonthQuery(monthQuery) {
@@ -737,10 +750,11 @@ app.get('/admin', requireAuth, (req, res) => {
         (SELECT COUNT(*) FROM patients) AS total_patients,
         (SELECT COUNT(*) FROM submissions) AS total_submissions,
         (SELECT COUNT(*) FROM patient_links WHERE is_used = 0) AS pending_links,
-        (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments
+        (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments,
+        (SELECT COALESCE(SUM(value), 0) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_revenue
       `
     )
-    .get(nowIso());
+    .get(nowIso(), nowIso());
 
   const rows = db
     .prepare(
@@ -833,6 +847,10 @@ app.get('/admin', requireAuth, (req, res) => {
         <article class="stat-card">
           <span>Consultas futuras</span>
           <strong>${escapeHtml(counters.upcoming_appointments)}</strong>
+        </article>
+        <article class="stat-card">
+          <span>Faturamento previsto</span>
+          <strong>R$ ${escapeHtml(formatBRL(counters.upcoming_revenue))}</strong>
         </article>
       </div>
     </section>
@@ -1328,11 +1346,13 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
                     <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong>
                     <span>${escapeHtml(event.full_name)}</span>
                     ${statusBadge}
+                    ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
                   </a>`
                 : `<div class="calendar-event">
                     <span>${escapeHtml(formatTime(event.start_at))}</span>
                     <strong>${escapeHtml(event.title)}</strong>
                     ${statusBadge}
+                    ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
                   </div>`
               }
               ${event.status !== 'cancelled' ? `
@@ -1427,6 +1447,10 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
           </div>
         </div>
         <label class="field">
+          <span>Valor <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
+          <input type="number" name="value" min="0" step="0.01" placeholder="0,00">
+        </label>
+        <label class="field">
           <span>Observações</span>
           <textarea name="notes" rows="3" placeholder="Ex.: revisar rotina e reação ao retinol"></textarea>
         </label>
@@ -1449,6 +1473,7 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
   const startAt = combineDateTime(req.body.startDate, req.body.startTime);
   const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
   const notes = String(req.body.notes || '').trim() || null;
+  const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
   const returnMonth = String(req.body.returnMonth || '').trim();
   const redirectMonth = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
 
@@ -1467,10 +1492,10 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
 
   db.prepare(
     `
-      INSERT INTO appointments (patient_id, title, start_at, end_at, notes, status, created_at)
-      VALUES (?, ?, ?, ?, ?, 'scheduled', ?)
+      INSERT INTO appointments (patient_id, title, start_at, end_at, notes, value, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
     `
-  ).run(resolvedPatientId, title, startAt, endAt, notes, nowIso());
+  ).run(resolvedPatientId, title, startAt, endAt, notes, value, nowIso());
 
   const targetMonth = String(startAt).slice(0, 7);
   const monthToOpen = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : redirectMonth;

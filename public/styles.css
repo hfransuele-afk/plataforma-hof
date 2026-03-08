@@ -188,6 +188,17 @@ legend {
   gap: 8px;
 }
 
+.appointment-value {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #5a7a4a;
+  background: rgba(90, 122, 74, 0.10);
+  border-radius: 6px;
+  padding: 1px 7px;
+  margin-top: 2px;
+}
+
 @media (max-width: 400px) {
   .date-time-pair {
     grid-template-columns: 1fr;
