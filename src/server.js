@@ -737,7 +737,7 @@ app.get('/admin', requireAuth, (req, res) => {
         (SELECT COUNT(*) FROM patients) AS total_patients,
         (SELECT COUNT(*) FROM submissions) AS total_submissions,
         (SELECT COUNT(*) FROM patient_links WHERE is_used = 0) AS pending_links,
-        (SELECT COUNT(*) FROM appointments WHERE start_at >= ?) AS upcoming_appointments
+        (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments
       `
     )
     .get(nowIso());
