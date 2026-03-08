@@ -37,6 +37,7 @@ seedDefaultAdmin();
 backfillLegacyPatients();
 ensureAppointmentPatientNullable();
 ensureAppointmentValueColumn();
+ensurePatientNotesColumn();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -237,6 +238,13 @@ function ensureAppointmentValueColumn() {
   const cols = db.prepare('PRAGMA table_info(appointments)').all();
   if (!cols.some((c) => c.name === 'value')) {
     db.exec('ALTER TABLE appointments ADD COLUMN value REAL');
+  }
+}
+
+function ensurePatientNotesColumn() {
+  const cols = db.prepare('PRAGMA table_info(patients)').all();
+  if (!cols.some((c) => c.name === 'notes')) {
+    db.exec('ALTER TABLE patients ADD COLUMN notes TEXT');
   }
 }
 
@@ -1330,6 +1338,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       </div>
     </header>
 
+    ${renderAlert(req.query.saved ? 'Observações salvas com sucesso!' : null, 'success')}
+
     <section class="panel">
       <h2>Histórico de questionários</h2>
       <div class="table-wrap">
@@ -1372,6 +1382,17 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     </section>
 
     <section class="panel">
+      <h2>Observações clínicas</h2>
+      <form class="patient-notes-form" method="post" action="/admin/patients/${patient.id}/notes">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <textarea name="notes" placeholder="Anotações livres sobre a paciente: evolução, protocolos, observações da consulta…">${escapeHtml(patient.notes || '')}</textarea>
+        <div>
+          <button class="btn primary" type="submit">Salvar observações</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
         <h2 style="margin:0">Análise da IA</h2>
         <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Abrir chat completo →</a>
@@ -1383,6 +1404,27 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   `;
 
   res.send(layout({ title: `Prontuário ${patient.full_name}`, body, userEmail: req.session.adminEmail }));
+});
+
+// ─── Salvar observações clínicas da paciente ───────────────
+app.post('/admin/patients/:id/notes', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const patientId = Number(req.params.id);
+  const notes = String(req.body.notes || '').trim();
+
+  const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
+  if (!patient) {
+    res.status(404).send('Paciente não encontrada.');
+    return;
+  }
+
+  db.prepare('UPDATE patients SET notes = ?, updated_at = ? WHERE id = ?').run(notes, nowIso(), patientId);
+
+  res.redirect(`/admin/patients/${patientId}?saved=1`);
 });
 
 app.get('/admin/agenda', requireAuth, (req, res) => {
@@ -1841,90 +1883,136 @@ app.get('/admin/file/:id', requireAuth, (req, res) => {
 app.get('/admin/chat', requireAuth, (req, res) => {
   const selectedSubmissionId = Number(req.query.submissionId || 0) || null;
   const selectedPatientId = Number(req.query.patientId || 0) || null;
+  const focusedMode = !!(selectedSubmissionId || selectedPatientId);
 
-  const submissions = db
-    .prepare(
-      `
-      SELECT
-        s.id,
-        s.patient_id,
-        s.created_at,
-        p.patient_code,
-        p.full_name AS patient_name,
-        json_extract(s.data_json, '$.nomeCompleto') AS nome,
-        json_extract(s.data_json, '$.queixaPrincipal') AS queixa
-      FROM submissions s
-      LEFT JOIN patients p ON p.id = s.patient_id
-      ORDER BY s.id DESC
-      LIMIT 200
-      `
-    )
-    .all();
+  // ── Modo focado: paciente/caso específico ──────────────────────
+  if (focusedMode) {
+    // Dados da paciente
+    const patientRow = selectedPatientId
+      ? db.prepare('SELECT id, patient_code, full_name FROM patients WHERE id = ?').get(selectedPatientId)
+      : selectedSubmissionId
+        ? db.prepare('SELECT p.id, p.patient_code, p.full_name FROM patients p JOIN submissions s ON s.patient_id = p.id WHERE s.id = ?').get(selectedSubmissionId)
+        : null;
 
-  const patients = db
-    .prepare('SELECT id, patient_code, full_name FROM patients ORDER BY id ASC')
-    .all();
+    // Mensagens filtradas
+    let messages;
+    if (selectedSubmissionId) {
+      messages = db.prepare(
+        'SELECT role, content, created_at FROM chat_messages WHERE submission_id = ? ORDER BY id ASC'
+      ).all(selectedSubmissionId);
+    } else {
+      messages = db.prepare(
+        'SELECT role, content, created_at FROM chat_messages WHERE patient_id = ? ORDER BY id ASC'
+      ).all(selectedPatientId);
+    }
 
-  const messages = db
-    .prepare(
-      `
-      SELECT
-        m.*,
-        p.patient_code,
-        p.full_name AS patient_name
-      FROM chat_messages m
-      LEFT JOIN patients p ON p.id = m.patient_id
-      ORDER BY m.id ASC
-      LIMIT 200
-      `
-    )
-    .all();
+    const patientName = patientRow ? `${toCodeNumber(patientRow.patient_code)} — ${patientRow.full_name}` : 'Paciente';
+    const backLink = patientRow ? `/admin/patients/${patientRow.id}` : '/admin';
+    const caseLabel = selectedSubmissionId ? ` · Caso #${selectedSubmissionId}` : '';
 
-  const messagesHtml = messages
-    .map((msg) => {
-      const cssRole = msg.role === 'assistant' ? 'assistant' : 'user';
-      const submissionTag = msg.submission_id
-        ? `<span class="msg-tag">Caso #${msg.submission_id}</span>`
-        : '';
-      const patientTag = msg.patient_id
-        ? `<span class="msg-tag patient">Paciente ${escapeHtml(toCodeNumber(msg.patient_code || msg.patient_id))} - ${escapeHtml(msg.patient_name || '')}</span>`
-        : '';
+    const bubblesHtml = messages.map((msg) => {
+      const isAi = msg.role === 'assistant';
+      const contentHtml = escapeHtml(msg.content).replace(/\n/g, '<br>');
+      const time = new Date(msg.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
       return `
-        <article class="chat-message ${cssRole}">
-          <header>
-            <strong>${msg.role === 'assistant' ? 'LLM' : 'Você'}</strong>
-            ${submissionTag}
-            ${patientTag}
-            <span>${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
-          </header>
-          <p>${escapeHtml(msg.content)}</p>
-        </article>
-      `;
-    })
-    .join('');
+        <div class="bubble-wrap ${isAi ? 'bubble-wrap--ai' : 'bubble-wrap--user'}">
+          <div class="bubble ${isAi ? 'bubble--ai' : 'bubble--user'}">
+            <div class="bubble-text">${contentHtml}</div>
+            <span class="bubble-time">${time}</span>
+          </div>
+        </div>`;
+    }).join('');
 
-  const options = submissions
-    .map((item) => {
-      const labelName = item.patient_name || item.nome || `Caso ${item.id}`;
-      const codeText = item.patient_code ? toCodeNumber(item.patient_code) : '----';
-      const selected = selectedSubmissionId === item.id ? 'selected' : '';
-      return `<option value="${item.id}" ${selected}>#${item.id} - ${escapeHtml(codeText)} ${escapeHtml(labelName)}</option>`;
-    })
-    .join('');
+    const body = `
+      <header class="panel header-panel">
+        <div>
+          <p class="eyebrow">Chat clínico${escapeHtml(caseLabel)}</p>
+          <h1>${escapeHtml(patientName)}</h1>
+        </div>
+        <div class="header-actions">
+          <a class="btn" href="${backLink}">← Prontuário</a>
+          <a class="btn" href="/admin/chat">Chat geral</a>
+        </div>
+      </header>
 
-  const patientOptions = patients
-    .map((item) => {
-      const selected = selectedPatientId === item.id ? 'selected' : '';
-      return `<option value="${item.id}" ${selected}>${escapeHtml(toCodeNumber(item.patient_code))} - ${escapeHtml(item.full_name)}</option>`;
-    })
-    .join('');
+      ${renderAlert(req.query.error, 'error')}
+
+      <section class="panel focused-chat">
+        <div class="focused-chat-feed" id="chatFeed">
+          ${bubblesHtml || '<p class="muted" style="text-align:center;padding:24px">Nenhuma mensagem ainda. Envie a primeira abaixo.</p>'}
+        </div>
+
+        <form class="focused-chat-form" method="post" action="/admin/chat">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          ${selectedSubmissionId ? `<input type="hidden" name="submissionId" value="${selectedSubmissionId}">` : ''}
+          ${selectedPatientId || (patientRow && patientRow.id) ? `<input type="hidden" name="patientId" value="${selectedPatientId || patientRow.id}">` : ''}
+          <textarea class="focused-chat-input" name="message" rows="2" required
+            placeholder="Escreva sua mensagem…"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.form.submit();}"></textarea>
+          <button class="btn primary focused-chat-send" type="submit">Enviar</button>
+        </form>
+      </section>
+
+      <script>
+        (function(){
+          var feed = document.getElementById('chatFeed');
+          if(feed) feed.scrollTop = feed.scrollHeight;
+        })();
+      </script>
+    `;
+
+    return res.send(layout({ title: `Chat — ${patientName}`, body, userEmail: req.session.adminEmail }));
+  }
+
+  // ── Modo global (sem paciente/caso) ───────────────────────────
+  const submissions = db.prepare(
+    `SELECT s.id, s.patient_id, p.patient_code, p.full_name AS patient_name,
+       json_extract(s.data_json, '$.nomeCompleto') AS nome
+     FROM submissions s LEFT JOIN patients p ON p.id = s.patient_id
+     ORDER BY s.id DESC LIMIT 200`
+  ).all();
+
+  const patients = db.prepare('SELECT id, patient_code, full_name FROM patients ORDER BY id ASC').all();
+
+  const messages = db.prepare(
+    `SELECT m.*, p.patient_code, p.full_name AS patient_name
+     FROM chat_messages m LEFT JOIN patients p ON p.id = m.patient_id
+     ORDER BY m.id ASC LIMIT 200`
+  ).all();
+
+  const messagesHtml = messages.map((msg) => {
+    const cssRole = msg.role === 'assistant' ? 'assistant' : 'user';
+    const submissionTag = msg.submission_id ? `<span class="msg-tag">Caso #${msg.submission_id}</span>` : '';
+    const patientTag = msg.patient_id
+      ? `<span class="msg-tag patient">${escapeHtml(toCodeNumber(msg.patient_code || msg.patient_id))} — ${escapeHtml(msg.patient_name || '')}</span>`
+      : '';
+    return `
+      <article class="chat-message ${cssRole}">
+        <header>
+          <strong>${msg.role === 'assistant' ? '🤖 IA' : '👩‍⚕️ Você'}</strong>
+          ${submissionTag}${patientTag}
+          <span>${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
+        </header>
+        <p>${escapeHtml(msg.content)}</p>
+      </article>`;
+  }).join('');
+
+  const options = submissions.map((item) => {
+    const labelName = item.patient_name || item.nome || `Caso ${item.id}`;
+    const codeText = item.patient_code ? toCodeNumber(item.patient_code) : '----';
+    return `<option value="${item.id}">#${item.id} — ${escapeHtml(codeText)} ${escapeHtml(labelName)}</option>`;
+  }).join('');
+
+  const patientOptions = patients.map((item) =>
+    `<option value="${item.id}">${escapeHtml(toCodeNumber(item.patient_code))} — ${escapeHtml(item.full_name)}</option>`
+  ).join('');
 
   const body = `
     <header class="panel header-panel">
       <div>
-        <p class="eyebrow">Assistente com LLM via API</p>
+        <p class="eyebrow">Assistente clínica com IA</p>
         <h1>Chat clínico</h1>
-        <p class="muted">A LLM recebe contexto global da plataforma (pacientes, respostas e agenda) para raciocinar com base completa.</p>
+        <p class="muted">A IA recebe contexto completo da plataforma para raciocinar com base em dados reais.</p>
       </div>
       <div class="header-actions">
         <a class="btn" href="/admin">Voltar ao painel</a>
@@ -1935,32 +2023,41 @@ app.get('/admin/chat', requireAuth, (req, res) => {
 
     <section class="panel chat-wrap">
       <div class="chat-feed">
-        ${messagesHtml || '<p class="muted">Ainda não há mensagens.</p>'}
+        ${messagesHtml || '<p class="muted" style="text-align:center;padding:24px">Ainda não há mensagens. Para analisar uma paciente, abra o prontuário dela e clique em "Continuar conversa".</p>'}
       </div>
 
       <form class="form-stack" method="post" action="/admin/chat">
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-        <label class="field">
-          <span>Associar a uma paciente (opcional)</span>
-          <select name="patientId">
-            <option value="">Sem paciente específica</option>
-            ${patientOptions}
-          </select>
-        </label>
-        <label class="field">
-          <span>Associar a um caso (opcional)</span>
-          <select name="submissionId">
-            <option value="">Sem caso específico</option>
-            ${options}
-          </select>
-        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Paciente (opcional)</span>
+            <select name="patientId">
+              <option value="">Sem paciente específica</option>
+              ${patientOptions}
+            </select>
+          </label>
+          <label class="field">
+            <span>Caso (opcional)</span>
+            <select name="submissionId">
+              <option value="">Sem caso específico</option>
+              ${options}
+            </select>
+          </label>
+        </div>
         <label class="field">
           <span>Mensagem</span>
-          <textarea name="message" rows="5" required placeholder="Ex.: Analise o caso e sugira uma rotina inicial para pele sensível com manchas."></textarea>
+          <textarea name="message" rows="4" required placeholder="Ex.: Analise o caso e sugira uma rotina inicial para pele sensível com manchas."></textarea>
         </label>
-        <button class="btn primary" type="submit">Enviar para LLM</button>
+        <button class="btn primary" type="submit">Enviar para IA</button>
       </form>
     </section>
+
+    <script>
+      (function(){
+        var feed = document.querySelector('.chat-feed');
+        if(feed) feed.scrollTop = feed.scrollHeight;
+      })();
+    </script>
   `;
 
   res.send(layout({ title: 'Chat LLM', body, userEmail: req.session.adminEmail }));
