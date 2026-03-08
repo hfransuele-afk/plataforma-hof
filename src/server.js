@@ -1061,10 +1061,15 @@ app.post('/paciente/:token', (req, res) => {
       'INSERT INTO submissions (patient_id, link_id, token, data_json, created_at) VALUES (?, ?, ?, ?, ?)'
     );
 
+    let savedPatientId = null;
+    let savedSubmissionId = null;
+
     const tx = db.transaction(() => {
       const patientId = getOrCreatePatientFromPayload(payload, link.patient_id || null);
       const result = insertSubmission.run(patientId, link.id, token, JSON.stringify(payload), nowIso());
       const submissionId = result.lastInsertRowid;
+      savedPatientId = patientId;
+      savedSubmissionId = submissionId;
       const files = req.files || {};
 
       const insertFile = db.prepare(
@@ -1093,6 +1098,13 @@ app.post('/paciente/:token', (req, res) => {
     });
 
     tx();
+
+    // Dispara pré-análise automática em background (não bloqueia a resposta da paciente)
+    setImmediate(() => {
+      triggerAutoAnalysis(savedSubmissionId, savedPatientId).catch((err) => {
+        console.error('[auto-analysis]', err.message);
+      });
+    });
 
     res.redirect('/obrigado');
   });
@@ -2039,19 +2051,61 @@ function buildGlobalKnowledgeBase() {
   return JSON.stringify(compact);
 }
 
+async function triggerAutoAnalysis(submissionId, patientId) {
+  if (!submissionId) return;
+
+  // Evita re-análise se já existe alguma mensagem para este caso
+  const existing = db.prepare('SELECT id FROM chat_messages WHERE submission_id = ? LIMIT 1').get(submissionId);
+  if (existing) return;
+
+  const admin = db.prepare('SELECT id FROM admins ORDER BY id ASC LIMIT 1').get();
+  if (!admin) return;
+
+  const prompt = [
+    'Faça uma pré-análise completa da ficha desta paciente.',
+    'Organize em tópicos claros:',
+    '1) Perfil da pele e queixas principais',
+    '2) Avaliação dos produtos em uso (são adequados para as queixas e tipo de pele?)',
+    '3) Pontos de atenção (ingredientes conflitantes, riscos, alergias reportadas)',
+    '4) Sugestões iniciais de rotina (AM e PM)',
+    '5) Perguntas que a profissional pode querer aprofundar na consulta.',
+    'Use bullet points. Seja clara e objetiva para uma esteticista clínica.'
+  ].join(' ');
+
+  const analysis = await callLlm(prompt, submissionId, patientId);
+
+  db.prepare(
+    'INSERT INTO chat_messages (admin_id, patient_id, submission_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(admin.id, patientId, submissionId, 'assistant', `📋 Pré-análise automática\n\n${analysis}`, nowIso());
+}
+
 async function callLlm(currentMessage, submissionId, patientId) {
   const apiUrl = process.env.LLM_API_URL || 'https://api.openai.com/v1/chat/completions';
   const apiKey = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL || 'gpt-4.1-mini';
+  const model = process.env.LLM_MODEL || 'gpt-4.1';
 
   if (!apiKey) {
     throw new Error('Defina LLM_API_KEY no arquivo .env');
   }
 
-  const recentMessages = db
-    .prepare('SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 16')
-    .all()
-    .reverse();
+  // Memória scoped: prioriza o caso selecionado, depois a paciente, depois global
+  let recentMessages;
+  if (submissionId) {
+    recentMessages = db
+      .prepare('SELECT role, content FROM chat_messages WHERE submission_id = ? ORDER BY id DESC LIMIT 30')
+      .all(submissionId)
+      .reverse();
+  } else if (patientId) {
+    recentMessages = db
+      .prepare('SELECT role, content FROM chat_messages WHERE patient_id = ? ORDER BY id DESC LIMIT 30')
+      .all(patientId)
+      .reverse();
+  } else {
+    recentMessages = db
+      .prepare('SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 20')
+      .all()
+      .reverse();
+  }
 
   const contextBlocks = [];
   const knowledgeBase = buildGlobalKnowledgeBase();
@@ -2102,11 +2156,16 @@ async function callLlm(currentMessage, submissionId, patientId) {
   }
 
   const systemPrompt = [
-    'Você é uma assistente de suporte para consultoria de skincare.',
-    'Responda em português do Brasil.',
-    'Você deve usar toda a base de dados enviada para raciocinar, cruzar padrões e justificar respostas com dados.',
-    'Seja objetiva, segura e ética; nunca substitua diagnóstico médico.',
-    'Quando houver risco clínico (alergia, reação intensa, suspeita de doença), oriente procurar dermatologista.'
+    'Você é uma assistente clínica especializada em skincare e estética facial, suporte à Fransuele Hanel, esteticista clínica.',
+    'Responda sempre em português do Brasil.',
+    'Você tem acesso completo à base de dados da plataforma: fichas das pacientes, respostas do questionário, produtos em uso, agenda e histórico de conversas.',
+    'Raciocine com base nos dados reais fornecidos. Cruze informações (ex.: tipo de pele × produtos × queixas) para dar respostas precisas.',
+    'Mantenha o contexto da conversa: lembre o que foi dito anteriormente nesta sessão.',
+    'Ao analisar uma ficha: identifique o tipo de pele, queixas principais, ingredientes problemáticos nos produtos, rotina inadequada e oportunidades de melhora.',
+    'Formate respostas longas com tópicos e bullet points para facilitar a leitura.',
+    'Seja objetiva, segura e ética. Nunca substitua diagnóstico médico ou dermatológico.',
+    'Quando houver risco clínico (alergia, reação intensa, suspeita de doença de pele), sempre oriente consultar dermatologista.',
+    'Quando sugerir produtos, priorize aqueles já citados pela paciente antes de sugerir novos.'
   ].join(' ');
 
   const messages = [{ role: 'system', content: systemPrompt }];
