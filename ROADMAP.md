@@ -24,35 +24,48 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
   - contexto global da plataforma (pacientes, respostas e agenda).
 - Repositório GitHub configurado e atualizado com todos os commits.
 - Preview estático no GitHub Pages configurado (vitrine).
-- Blueprint de deploy real no Render criado (`render.yaml`) com disco persistente.
+- ~~Blueprint de deploy no Render criado (`render.yaml`).~~ Render descartado (sem disco persistente no plano gratuito).
 - Healthcheck de produção criado (`/healthz`).
 - Hardening de produção inicial aplicado (cookies `secure` em produção + `trust proxy`).
-- Documentação de deploy criada (`DEPLOY.md`).
+- Decisão de infraestrutura: **VPS Hetzner CX22** (~€4/mês) com PM2 + Nginx + SSL.
+- Arquivos de deploy para VPS criados:
+  - `ecosystem.config.js` — configuração PM2 (restart automático, logs, limite de memória).
+  - `nginx/plataforma-fran.conf` — proxy reverso com headers de segurança.
+  - `scripts/setup-vps.sh` — setup completo do servidor (Node, PM2, Nginx, Certbot, SSL).
+  - `scripts/deploy.sh` — script de atualização contínua (git pull + pm2 restart).
+  - `DEPLOY_VPS.md` — guia passo a passo completo para subir a plataforma.
+- Domínio definido: **`clinic.franhanel.com`** (subdomínio do domínio existente `franhanel.com`).
+- Confirmação e cancelamento de consultas na agenda e no prontuário da paciente.
+- Exportação/impressão de cada anamnese como PDF via `GET /admin/submissions/:id/print`.
+- Área de configurações (`/admin/settings`) com troca de senha da profissional.
+- Backup do banco SQLite disponível para download no painel (`/admin/backup`).
 
 ### Em andamento
-- Publicação real da aplicação no Render (serviço ainda não criado no painel).
-- Configuração das variáveis de ambiente de produção (`BASE_URL`, `ADMIN_*`, `LLM_API_KEY`).
-- Validação final em ambiente público com domínio/HTTPS.
+- Criação do servidor VPS na Hetzner Cloud (CX22, Ubuntu 22.04).
+- Apontar DNS: registro `A clinic → IP do servidor` no painel do `franhanel.com`.
+- Configuração das variáveis de ambiente de produção no servidor (`.env`).
+- Execução do `scripts/setup-vps.sh` para subir a plataforma em `clinic.franhanel.com`.
 
 ### Próximos passos (prioridade)
-1. Finalizar deploy real no Render (criar serviço via Blueprint e configurar envs).
-2. Configurar domínio próprio + HTTPS.
-3. Configurar backup automatizado do SQLite e pasta de uploads.
-4. Definir fluxo de recuperação de senha para a profissional.
+1. Criar servidor VPS na Hetzner + apontar DNS de `clinic.franhanel.com`.
+2. Rodar `setup-vps.sh` e validar `https://clinic.franhanel.com/healthz`.
+3. ~~Configurar backup do SQLite via painel.~~ ✅ Concluído.
+4. ~~Definir fluxo de recuperação/troca de senha.~~ ✅ Concluído em `/admin/settings`.
 5. Melhorar permissões e trilha de auditoria (logs de acesso e ações).
-6. Adicionar exportação de resposta em PDF para cada caso.
-7. Criar área de configurações (marca, texto, termos, modelo da LLM).
+6. ~~Adicionar exportação de resposta em PDF.~~ ✅ Concluído via `/admin/submissions/:id/print`.
+7. Expandir área de configurações (marca, texto, termos, modelo da LLM).
 8. Adicionar múltiplos usuários (se a clínica crescer).
 9. Adicionar termos LGPD e política de retenção de dados.
-10. Evoluir agenda com confirmação, remarcação e cancelamento.
+10. ~~Evoluir agenda com confirmação e cancelamento.~~ ✅ Concluído.
 
 ## Plano de Entregas
 
 ### Sprint 1 (Operação real)
-- Deploy no Render via `render.yaml`.
-- Configurar variáveis de ambiente em produção.
+- ~~Deploy no Render.~~ → Deploy no VPS Hetzner via `setup-vps.sh`.
+- Apontar DNS `clinic.franhanel.com` → IP do servidor.
+- Configurar variáveis de ambiente em produção (`.env` no servidor).
 - Validar upload de imagens em produção.
-- Testar fluxo completo: criação de link -> resposta -> agenda -> análise com LLM.
+- Testar fluxo completo: criação de link → resposta → agenda → análise com LLM.
 
 ### Sprint 2 (Segurança e confiabilidade)
 - Backup diário.
@@ -66,11 +79,14 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
 
 ## Checklist operacional de aceite
 - [x] Código da plataforma consolidado e publicado no GitHub.
-- [x] Preparação de produção concluída (healthcheck + blueprint + guia de deploy).
+- [x] Preparação de produção concluída (healthcheck + scripts VPS + guia de deploy).
+- [x] Troca de senha disponível no painel (`/admin/settings`).
+- [x] Backup do banco disponível para download no painel.
+- [x] Confirmação/cancelamento de consultas na agenda.
+- [x] Impressão/exportação PDF de cada anamnese.
 - [ ] Login da profissional funcionando em produção.
 - [ ] Link de paciente abrindo em celular sem erro.
 - [ ] Resposta salva no painel corretamente.
 - [ ] Upload de rosto e produtos funcionando.
 - [ ] Agenda funcionando em produção.
 - [ ] Chat com LLM respondendo com chave válida.
-- [ ] Backup de dados configurado.

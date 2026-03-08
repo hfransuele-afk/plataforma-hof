@@ -26,7 +26,3 @@ services:
         sync: false
       - key: LLM_MODEL
         value: gpt-4.1-mini
-    disk:
-      name: plataforma-storage
-      mountPath: /opt/render/project/src/storage
-      sizeGB: 1
