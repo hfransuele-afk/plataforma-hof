@@ -2141,7 +2141,23 @@ async function callLlm(currentMessage, submissionId, patientId) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`API retornou ${response.status}: ${body.slice(0, 400)}`);
+    let friendlyMsg = `Erro na API (${response.status})`;
+    try {
+      const parsed = JSON.parse(body);
+      const code = parsed?.error?.code || parsed?.error?.type || '';
+      if (response.status === 429 || code === 'insufficient_quota') {
+        friendlyMsg = 'Créditos da API esgotados. Acesse platform.openai.com/account/billing para recarregar.';
+      } else if (response.status === 401) {
+        friendlyMsg = 'Chave de API inválida. Verifique a variável LLM_API_KEY no servidor.';
+      } else if (response.status === 503 || response.status === 502) {
+        friendlyMsg = 'API temporariamente indisponível. Tente novamente em alguns instantes.';
+      } else if (parsed?.error?.message) {
+        friendlyMsg = `Erro da API: ${parsed.error.message.slice(0, 200)}`;
+      }
+    } catch (_) {
+      friendlyMsg = `API retornou ${response.status}`;
+    }
+    throw new Error(friendlyMsg);
   }
 
   const data = await response.json();
