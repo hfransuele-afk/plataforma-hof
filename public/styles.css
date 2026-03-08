@@ -182,6 +182,18 @@ legend {
   font-weight: 700;
 }
 
+.date-time-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+@media (max-width: 400px) {
+  .date-time-pair {
+    grid-template-columns: 1fr;
+  }
+}
+
 input,
 select,
 textarea {
@@ -534,6 +546,15 @@ th {
   border-style: dashed;
 }
 
+.calendar-cell.has-events {
+  background: rgba(173, 95, 66, 0.07);
+  border-color: #c9a090;
+}
+
+.calendar-cell.has-events header {
+  color: var(--accent);
+}
+
 .calendar-cell header {
   font-weight: 800;
   font-size: 0.9rem;
@@ -542,6 +563,8 @@ th {
 .calendar-events {
   display: grid;
   gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .calendar-event {
@@ -558,6 +581,27 @@ th {
 
 .calendar-event:hover {
   border-color: #c78f72;
+}
+
+.calendar-event-block {
+  display: grid;
+  gap: 4px;
+}
+
+.calendar-event-block form {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.btn.tiny.danger {
+  background: rgba(182, 63, 63, 0.1);
+  border-color: #c97a7a;
+  color: var(--danger);
+}
+
+.btn.tiny.danger:hover {
+  background: rgba(182, 63, 63, 0.2);
 }
 
 @media (max-width: 760px) {

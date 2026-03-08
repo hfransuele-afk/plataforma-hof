@@ -67,8 +67,8 @@ const formSections = [
     fields: [
       {
         name: 'alteracaoPelePeriodo',
-        label: 'Você percebe alteração da pele no período menstrual?',
-        type: 'radio',
+        label: 'Você percebe alteração da pele no período menstrual? (pode marcar mais de uma)',
+        type: 'checkbox-group',
         options: ['Sim, piora antes', 'Sim, piora durante', 'Não percebo alteração', 'Não se aplica']
       },
       {
@@ -97,8 +97,8 @@ const formSections = [
     fields: [
       {
         name: 'faseVida',
-        label: 'Você se encontra em',
-        type: 'radio',
+        label: 'Você se encontra em (pode marcar mais de uma)',
+        type: 'checkbox-group',
         options: ['Adolescência', 'Vida adulta jovem', 'Perimenopausa', 'Menopausa', 'Pós-menopausa']
       },
       {
@@ -242,8 +242,8 @@ const formSections = [
       { name: 'frequenciaAtividadeFisica', label: 'Frequência de atividade física', type: 'text' },
       {
         name: 'qualidadeSono',
-        label: 'Qualidade do sono',
-        type: 'radio',
+        label: 'Qualidade do sono (pode marcar mais de uma)',
+        type: 'checkbox-group',
         options: ['Boa', 'Irregular', 'Insônia']
       }
     ]

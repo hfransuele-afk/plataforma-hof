@@ -35,6 +35,7 @@ db.pragma('journal_mode = WAL');
 setupDatabase();
 seedDefaultAdmin();
 backfillLegacyPatients();
+ensureAppointmentPatientNullable();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -191,6 +192,43 @@ function ensureColumn(tableName, columnName, definitionSql) {
   }
 }
 
+function ensureAppointmentPatientNullable() {
+  const tableInfo = db.prepare('PRAGMA table_info(appointments)').all();
+  const col = tableInfo.find((c) => c.name === 'patient_id');
+  if (!col || col.notnull === 0) return;
+
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    CREATE TABLE appointments_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER,
+      title TEXT NOT NULL,
+      start_at TEXT NOT NULL,
+      end_at TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
+    );
+
+    INSERT INTO appointments_new
+      SELECT id, patient_id, title, start_at, end_at, notes, status, created_at
+      FROM appointments;
+
+    DROP TABLE appointments;
+
+    ALTER TABLE appointments_new RENAME TO appointments;
+
+    PRAGMA foreign_keys = ON;
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_appointments_patient ON appointments(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_appointments_start ON appointments(start_at);
+  `);
+}
+
 function seedDefaultAdmin() {
   const count = db.prepare('SELECT COUNT(*) AS total FROM admins').get().total;
   if (count > 0) {
@@ -229,6 +267,13 @@ function formatDateTime(value) {
   }
 
   return String(value);
+}
+
+function combineDateTime(datePart, timePart) {
+  const d = String(datePart || '').trim();
+  const t = String(timePart || '').trim();
+  if (!d) return null;
+  return `${d}T${t || '00:00'}:00`;
 }
 
 function formatTime(value) {
@@ -748,6 +793,7 @@ app.get('/admin', requireAuth, (req, res) => {
         <a class="btn" href="/admin/patients">Pacientes</a>
         <a class="btn" href="/admin/agenda">Agenda</a>
         <a class="btn" href="/admin/chat">Chat LLM</a>
+        <a class="btn" href="/admin/settings">Configurações</a>
         <form method="post" action="/logout">
           <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
           <button class="btn ghost" type="submit">Sair</button>
@@ -1122,6 +1168,7 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     )
     .join('');
 
+  const statusLabel = { scheduled: 'Agendada', confirmed: 'Confirmada', cancelled: 'Cancelada' };
   const appointmentsRows = appointments
     .map(
       (appointment) => `
@@ -1129,8 +1176,17 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
           <td>${escapeHtml(formatDateTime(appointment.start_at))}</td>
           <td>${escapeHtml(formatDateTime(appointment.end_at))}</td>
           <td>${escapeHtml(appointment.title)}</td>
-          <td>${escapeHtml(appointment.status)}</td>
+          <td>${escapeHtml(statusLabel[appointment.status] || appointment.status)}</td>
           <td>${escapeHtml(appointment.notes || '-')}</td>
+          <td>
+            ${appointment.status !== 'cancelled' ? `
+            <form method="post" action="/admin/agenda/${appointment.id}/status" style="display:inline">
+              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+              <input type="hidden" name="returnPatient" value="${patient.id}">
+              ${appointment.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed">Confirmar</button>` : ''}
+              <button class="btn tiny danger" name="status" value="cancelled">Cancelar</button>
+            </form>` : '<span class="muted">—</span>'}
+          </td>
         </tr>
       `
     )
@@ -1181,10 +1237,11 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
               <th>Título</th>
               <th>Status</th>
               <th>Observações</th>
+              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
-            ${appointmentsRows || '<tr><td colspan="5" class="muted">Nenhuma consulta marcada.</td></tr>'}
+            ${appointmentsRows || '<tr><td colspan="6" class="muted">Nenhuma consulta marcada.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1209,7 +1266,7 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
         p.full_name,
         p.patient_code
       FROM appointments a
-      JOIN patients p ON p.id = a.patient_id
+      LEFT JOIN patients p ON p.id = a.patient_id
       WHERE substr(a.start_at, 1, 7) = ?
       ORDER BY a.start_at ASC
       `
@@ -1238,18 +1295,43 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       const events = eventsByDay.get(cell.dateKey) || [];
       const eventsHtml = events
         .map(
-          (event) => `
-            <a class="calendar-event" href="/admin/patients/${event.patient_id}">
-              <span>${escapeHtml(formatTime(event.start_at))}</span>
-              <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong>
-              <span>${escapeHtml(event.full_name)}</span>
-            </a>
-          `
+          (event) => {
+            const statusBadge = event.status === 'confirmed'
+              ? '<span class="chip done" style="font-size:0.68rem;padding:1px 6px;">Confirmada</span>'
+              : event.status === 'cancelled'
+              ? '<span class="chip" style="font-size:0.68rem;padding:1px 6px;background:var(--danger);color:#fff;">Cancelada</span>'
+              : '<span class="chip pending" style="font-size:0.68rem;padding:1px 6px;">Agendada</span>';
+            return `
+            <div class="calendar-event-block">
+              ${event.patient_id
+                ? `<a class="calendar-event" href="/admin/patients/${event.patient_id}">
+                    <span>${escapeHtml(formatTime(event.start_at))}</span>
+                    <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong>
+                    <span>${escapeHtml(event.full_name)}</span>
+                    ${statusBadge}
+                  </a>`
+                : `<div class="calendar-event">
+                    <span>${escapeHtml(formatTime(event.start_at))}</span>
+                    <strong>${escapeHtml(event.title)}</strong>
+                    ${statusBadge}
+                  </div>`
+              }
+              ${event.status !== 'cancelled' ? `
+              <form method="post" action="/admin/agenda/${event.id}/status" style="display:inline">
+                <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+                ${event.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar">✓</button>` : ''}
+                <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar">✗</button>
+              </form>` : ''}
+            </div>
+          `;
+          }
         )
         .join('');
 
+      const hasEvents = events.length > 0;
       return `
-        <article class="calendar-cell">
+        <article class="calendar-cell${hasEvents ? ' has-events' : ''}">
           <header>${cell.day}</header>
           <div class="calendar-events">
             ${eventsHtml || '<span class="muted">Sem consulta</span>'}
@@ -1301,9 +1383,9 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
         <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
         <label class="field">
-          <span>Paciente</span>
-          <select name="patientId" required>
-            <option value="">Selecione uma paciente</option>
+          <span>Paciente <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
+          <select name="patientId">
+            <option value="">— Sem paciente vinculado —</option>
             ${patientOptions}
           </select>
         </label>
@@ -1311,14 +1393,20 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
           <span>Título</span>
           <input type="text" name="title" placeholder="Consulta de retorno" required>
         </label>
-        <label class="field">
+        <div class="field">
           <span>Início</span>
-          <input type="datetime-local" name="startAt" required>
-        </label>
-        <label class="field">
-          <span>Fim (opcional)</span>
-          <input type="datetime-local" name="endAt">
-        </label>
+          <div class="date-time-pair">
+            <input type="date" name="startDate" required>
+            <input type="time" name="startTime" required>
+          </div>
+        </div>
+        <div class="field">
+          <span>Fim <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
+          <div class="date-time-pair">
+            <input type="date" name="endDate">
+            <input type="time" name="endTime">
+          </div>
+        </div>
         <label class="field">
           <span>Observações</span>
           <textarea name="notes" rows="3" placeholder="Ex.: revisar rotina e reação ao retinol"></textarea>
@@ -1337,24 +1425,25 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
     return;
   }
 
-  const patientId = Number(req.body.patientId || 0);
+  const resolvedPatientId = Number(req.body.patientId || 0) || null;
   const title = String(req.body.title || '').trim();
-  const startAt = String(req.body.startAt || '').trim();
-  const endAtRaw = String(req.body.endAt || '').trim();
-  const endAt = endAtRaw || null;
+  const startAt = combineDateTime(req.body.startDate, req.body.startTime);
+  const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
   const notes = String(req.body.notes || '').trim() || null;
   const returnMonth = String(req.body.returnMonth || '').trim();
   const redirectMonth = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
 
-  if (!patientId || !title || !startAt) {
-    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha paciente, título e horário de início.')}`);
+  if (!title || !startAt) {
+    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha título e horário de início.')}`);
     return;
   }
 
-  const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
-  if (!patient) {
-    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Paciente inválida para agendamento.')}`);
-    return;
+  if (resolvedPatientId) {
+    const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(resolvedPatientId);
+    if (!patient) {
+      res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Paciente inválida para agendamento.')}`);
+      return;
+    }
   }
 
   db.prepare(
@@ -1362,7 +1451,7 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
       INSERT INTO appointments (patient_id, title, start_at, end_at, notes, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'scheduled', ?)
     `
-  ).run(patientId, title, startAt, endAt, notes, nowIso());
+  ).run(resolvedPatientId, title, startAt, endAt, notes, nowIso());
 
   const targetMonth = String(startAt).slice(0, 7);
   const monthToOpen = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : redirectMonth;
@@ -1468,6 +1557,7 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
       <div class="header-actions">
         <a class="btn" href="/admin">Voltar ao painel</a>
         ${submission.patient_id ? `<a class="btn" href="/admin/patients/${submission.patient_id}">Prontuário da paciente</a>` : ''}
+        <a class="btn" href="/admin/submissions/${submissionId}/print" target="_blank">Imprimir / PDF</a>
         <a class="btn primary" href="/admin/chat?submissionId=${submissionId}&patientId=${submission.patient_id || ''}">Conversar com IA sobre este caso</a>
       </div>
     </header>
@@ -1955,6 +2045,237 @@ async function callLlm(currentMessage, submissionId, patientId) {
 
   return String(content).trim();
 }
+
+// ─── Agenda: atualizar status de consulta ─────────────────────────────────
+app.post('/admin/agenda/:id/status', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const appointmentId = Number(req.params.id);
+  const newStatus = String(req.body.status || '').trim();
+  const returnPatient = Number(req.body.returnPatient || 0) || null;
+  const returnMonth = String(req.body.returnMonth || '').trim();
+
+  if (!['scheduled', 'confirmed', 'cancelled'].includes(newStatus)) {
+    res.status(400).send('Status inválido.');
+    return;
+  }
+
+  const appointment = db.prepare('SELECT * FROM appointments WHERE id = ?').get(appointmentId);
+  if (!appointment) {
+    res.status(404).send('Consulta não encontrada.');
+    return;
+  }
+
+  db.prepare('UPDATE appointments SET status = ? WHERE id = ?').run(newStatus, appointmentId);
+
+  if (returnPatient) {
+    res.redirect(`/admin/patients/${returnPatient}`);
+    return;
+  }
+
+  const month = returnMonth || String(appointment.start_at || '').slice(0, 7) || monthKeyFromDate(new Date());
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(month)}&updated=1`);
+});
+
+// ─── Submissão: view de impressão / PDF ───────────────────────────────────
+app.get('/admin/submissions/:id/print', requireAuth, (req, res) => {
+  const submissionId = Number(req.params.id);
+  const submission = db
+    .prepare(
+      `
+      SELECT
+        s.*,
+        l.patient_name_hint,
+        p.id AS patient_id,
+        p.patient_code,
+        p.full_name AS patient_full_name,
+        p.email AS patient_email,
+        p.phone AS patient_phone
+      FROM submissions s
+      JOIN patient_links l ON l.id = s.link_id
+      LEFT JOIN patients p ON p.id = s.patient_id
+      WHERE s.id = ?
+      `
+    )
+    .get(submissionId);
+
+  if (!submission) {
+    res.status(404).send('Resposta não encontrada.');
+    return;
+  }
+
+  const data = JSON.parse(submission.data_json || '{}');
+
+  const sectionsHtml = formSections
+    .map((section) => {
+      const rows = section.fields
+        .map((field) => {
+          const value = data[field.name];
+          if (value === undefined || value === null || value === '') {
+            return `<tr><td style="color:#888;font-size:0.85rem">${escapeHtml(field.label)}</td><td style="color:#aaa;font-size:0.85rem">—</td></tr>`;
+          }
+          return `<tr><td style="font-weight:600;font-size:0.85rem;padding:4px 8px 4px 0;vertical-align:top;border-bottom:1px solid #ede4dc">${escapeHtml(field.label)}</td><td style="font-size:0.85rem;padding:4px 0;vertical-align:top;border-bottom:1px solid #ede4dc">${safeFieldValue(value)}</td></tr>`;
+        })
+        .join('');
+
+      return `
+        <div style="margin-bottom:20px">
+          <h3 style="font-family:Georgia,serif;font-size:1rem;border-bottom:2px solid #ad5f42;padding-bottom:4px;margin:0 0 8px">${escapeHtml(section.title)}</h3>
+          <table style="width:100%;border-collapse:collapse">${rows}</table>
+        </div>
+      `;
+    })
+    .join('');
+
+  const code = submission.patient_code ? toCodeNumber(submission.patient_code) : '----';
+  const patientName = submission.patient_full_name || data.nomeCompleto || submission.patient_name_hint || 'Paciente';
+  const date = new Date(submission.created_at).toLocaleString('pt-BR');
+
+  const html = `
+    <!doctype html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <title>Anamnese ${escapeHtml(patientName)} - ${escapeHtml(code)}</title>
+      <style>
+        @page { margin: 20mm 18mm; }
+        body { font-family: Arial, sans-serif; color: #2f2520; font-size: 13px; margin: 0; }
+        h1 { font-family: Georgia, serif; font-size: 1.4rem; margin: 0 0 4px; }
+        .meta { color: #66564b; font-size: 0.82rem; margin-bottom: 16px; }
+        .no-print { margin-top: 24px; text-align: center; }
+        @media print { .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <h1>Anamnese Clínica — ${escapeHtml(code)} ${escapeHtml(patientName)}</h1>
+      <div class="meta">
+        E-mail: ${escapeHtml(submission.patient_email || data.email || '-')} ·
+        Telefone: ${escapeHtml(submission.patient_phone || data.telefone || '-')} ·
+        Preenchido em: ${escapeHtml(date)}
+      </div>
+      ${sectionsHtml}
+      <div class="no-print">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ad5f42;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:1rem">
+          Imprimir / Salvar PDF
+        </button>
+        <button onclick="window.close()" style="margin-left:12px;padding:10px 24px;background:#eee;color:#333;border:none;border-radius:8px;cursor:pointer;font-size:1rem">
+          Fechar
+        </button>
+      </div>
+    </body>
+    </html>
+  `;
+
+  res.send(html);
+});
+
+// ─── Configurações ─────────────────────────────────────────────────────────
+app.get('/admin/settings', requireAuth, (req, res) => {
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Área da profissional</p>
+        <h1>Configurações</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin">Voltar ao painel</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.ok === 'password' ? 'Senha atualizada com sucesso.' : null, 'success')}
+    ${renderAlert(req.query.error || null, 'error')}
+
+    <section class="panel">
+      <h2>Alterar senha</h2>
+      <form class="form-stack" method="post" action="/admin/settings/password" style="max-width:440px">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <label class="field">
+          <span>Senha atual</span>
+          <input type="password" name="currentPassword" required>
+        </label>
+        <label class="field">
+          <span>Nova senha</span>
+          <input type="password" name="newPassword" required minlength="8">
+        </label>
+        <label class="field">
+          <span>Confirmar nova senha</span>
+          <input type="password" name="confirmPassword" required minlength="8">
+        </label>
+        <button class="btn primary" type="submit">Salvar nova senha</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Backup do banco de dados</h2>
+      <p class="muted">Baixe o arquivo do banco SQLite com todos os dados da plataforma (pacientes, questionários, agenda e chat).</p>
+      <a class="btn primary" href="/admin/backup">Baixar backup (clinic.db)</a>
+    </section>
+  `;
+
+  res.send(layout({ title: 'Configurações', body, userEmail: req.session.adminEmail }));
+});
+
+app.post('/admin/settings/password', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  const confirmPassword = String(req.body.confirmPassword || '');
+
+  if (newPassword.length < 8) {
+    res.redirect('/admin/settings?error=' + encodeURIComponent('A nova senha precisa ter no mínimo 8 caracteres.'));
+    return;
+  }
+
+  if (newPassword !== confirmPassword) {
+    res.redirect('/admin/settings?error=' + encodeURIComponent('As senhas não conferem.'));
+    return;
+  }
+
+  const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.session.adminId);
+  if (!admin || !bcrypt.compareSync(currentPassword, admin.password_hash)) {
+    res.redirect('/admin/settings?error=' + encodeURIComponent('Senha atual incorreta.'));
+    return;
+  }
+
+  const newHash = bcrypt.hashSync(newPassword, 12);
+  db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').run(newHash, admin.id);
+
+  res.redirect('/admin/settings?ok=password');
+});
+
+// ─── Backup: download do banco SQLite ─────────────────────────────────────
+app.get('/admin/backup', requireAuth, (req, res) => {
+  if (!fs.existsSync(dbPath)) {
+    res.status(404).send('Banco de dados não encontrado.');
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = `clinic-backup-${timestamp}.db`;
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', 'application/octet-stream');
+
+  // Usa o VACUUM INTO para gerar um backup limpo sem locks
+  const backupPath = path.join(storageDir, `backup-tmp-${Date.now()}.db`);
+  try {
+    db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    res.sendFile(backupPath, {}, () => {
+      try { fs.unlinkSync(backupPath); } catch (_e) { /* ignora */ }
+    });
+  } catch (_err) {
+    try { fs.unlinkSync(backupPath); } catch (_e) { /* ignora */ }
+    // Fallback: envia o arquivo direto
+    res.download(dbPath, filename);
+  }
+});
 
 app.use((err, req, res, _next) => {
   console.error(err);
