@@ -75,20 +75,23 @@ const upload = multer({
   }),
   limits: {
     fileSize: 10 * 1024 * 1024,
-    files: 16
+    files: 25
   },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype && file.mimetype.startsWith('image/')) {
+    const isImage = file.mimetype && file.mimetype.startsWith('image/');
+    const isPdf = file.mimetype === 'application/pdf';
+    if (isImage || isPdf) {
       cb(null, true);
       return;
     }
-    cb(new Error('Apenas imagens são permitidas nos uploads.'));
+    cb(new Error('Apenas imagens e PDFs são permitidos nos uploads.'));
   }
 });
 
 const uploadPatientFiles = upload.fields([
   { name: 'facePhotos', maxCount: 8 },
-  { name: 'productPhotos', maxCount: 12 }
+  { name: 'productPhotos', maxCount: 12 },
+  { name: 'examFiles', maxCount: 5 }
 ]);
 
 function setupDatabase() {
@@ -571,6 +574,17 @@ function renderField(field) {
     `;
   }
 
+  if (field.type === 'file') {
+    const accept = escapeHtml(field.accept || '*/*');
+    const multiple = field.multiple !== false ? 'multiple' : '';
+    return `
+      <label class="field">
+        <span>${label}</span>
+        <input type="file" name="${name}" accept="${accept}" ${multiple}>
+      </label>
+    `;
+  }
+
   const inputType = escapeHtml(field.type || 'text');
   const min = typeof field.min === 'number' ? `min="${field.min}"` : '';
   const max = typeof field.max === 'number' ? `max="${field.max}"` : '';
@@ -1026,6 +1040,10 @@ app.post('/paciente/:token', (req, res) => {
 
       for (const file of files.productPhotos || []) {
         insertFile.run(submissionId, 'product', file.originalname, file.filename, file.mimetype || null, nowIso());
+      }
+
+      for (const file of files.examFiles || []) {
+        insertFile.run(submissionId, 'exam', file.originalname, file.filename, file.mimetype || null, nowIso());
       }
 
       db.prepare(
@@ -1491,6 +1509,7 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
 
   const faceFiles = files.filter((file) => file.category === 'face');
   const productFiles = files.filter((file) => file.category === 'product');
+  const examFiles = files.filter((file) => file.category === 'exam');
 
   const sectionsHtml = formSections
     .map((section) => {
@@ -1544,6 +1563,44 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
     `;
   };
 
+  const renderFileList = (title, list) => {
+    if (!list.length) {
+      return `
+        <section class="panel answer-panel">
+          <h2>${escapeHtml(title)}</h2>
+          <p class="muted">Nenhum arquivo enviado.</p>
+        </section>
+      `;
+    }
+
+    const items = list
+      .map((file) => {
+        const isPdf = file.mime_type === 'application/pdf' || file.original_name.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+          return `
+            <a class="file-card-doc" href="/admin/file/${file.id}" target="_blank" rel="noopener">
+              <span class="file-doc-icon">📄</span>
+              <span>${escapeHtml(file.original_name)}</span>
+            </a>
+          `;
+        }
+        return `
+          <figure class="image-card">
+            <img src="/admin/file/${file.id}" alt="${escapeHtml(file.original_name)}" loading="lazy">
+            <figcaption>${escapeHtml(file.original_name)}</figcaption>
+          </figure>
+        `;
+      })
+      .join('');
+
+    return `
+      <section class="panel answer-panel">
+        <h2>${escapeHtml(title)}</h2>
+        <div class="image-grid">${items}</div>
+      </section>
+    `;
+  };
+
   const body = `
     <header class="panel header-panel">
       <div>
@@ -1582,6 +1639,7 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
     </section>
 
     ${sectionsHtml}
+    ${renderFileList('Arquivos de Exames', examFiles)}
     ${renderImageList('Fotos do rosto', faceFiles)}
     ${renderImageList('Fotos de produtos', productFiles)}
   `;

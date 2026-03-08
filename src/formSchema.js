@@ -58,7 +58,8 @@ const formSections = [
         type: 'checkbox-group',
         options: ['Ferro', 'Vitamina D', 'B12', 'Tireoide', 'Insulina', 'Testosterona']
       },
-      { name: 'desejaCompartilharExame', label: 'Deseja compartilhar algum exame?', type: 'textarea' }
+      { name: 'desejaCompartilharExame', label: 'Observações sobre os exames', type: 'textarea' },
+      { name: 'examFiles', label: 'Enviar arquivos de exames (imagem ou PDF)', type: 'file', accept: 'image/*,application/pdf', multiple: true }
     ]
   },
   {
