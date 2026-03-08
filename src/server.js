@@ -1286,6 +1286,7 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       FROM appointments a
       LEFT JOIN patients p ON p.id = a.patient_id
       WHERE substr(a.start_at, 1, 7) = ?
+        AND a.status != 'cancelled'
       ORDER BY a.start_at ASC
       `
     )
