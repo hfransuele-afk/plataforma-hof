@@ -188,6 +188,69 @@ legend {
   gap: 8px;
 }
 
+/* ── Prontuário: seção Análise da IA ─────────────────────── */
+.ai-messages-wrap { display: flex; flex-direction: column; gap: 20px; }
+
+.ai-case-group {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.ai-case-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(173,95,66,0.06);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+
+.ai-bubbles { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+
+.ai-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.ai-bubble--ai {
+  align-self: flex-start;
+  background: #f5f0eb;
+  border-bottom-left-radius: 4px;
+}
+
+.ai-bubble--user {
+  align-self: flex-end;
+  background: rgba(173,95,66,0.10);
+  border-bottom-right-radius: 4px;
+}
+
+.ai-bubble-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ai-bubble-text { color: var(--text); }
+
+.ai-bubble-time {
+  font-size: 0.70rem;
+  color: var(--muted);
+  margin-top: 2px;
+  align-self: flex-end;
+}
+
+/* ────────────────────────────────────────────────────────── */
+
 .appointment-value {
   display: inline-block;
   font-size: 0.72rem;

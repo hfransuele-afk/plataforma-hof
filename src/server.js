@@ -1216,11 +1216,23 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   const appointments = db
     .prepare(
       `
-      SELECT id, title, start_at, end_at, notes, status
+      SELECT id, title, start_at, end_at, notes, status, value
       FROM appointments
       WHERE patient_id = ?
       ORDER BY start_at DESC
       LIMIT 200
+      `
+    )
+    .all(patientId);
+
+  // Mensagens da IA para esta paciente (pré-análises e conversas)
+  const aiMessages = db
+    .prepare(
+      `
+      SELECT m.id, m.role, m.content, m.submission_id, m.created_at
+      FROM chat_messages m
+      WHERE m.patient_id = ?
+      ORDER BY m.created_at ASC
       `
     )
     .all(patientId);
@@ -1245,9 +1257,9 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       (appointment) => `
         <tr>
           <td>${escapeHtml(formatDateTime(appointment.start_at))}</td>
-          <td>${escapeHtml(formatDateTime(appointment.end_at))}</td>
           <td>${escapeHtml(appointment.title)}</td>
           <td>${escapeHtml(statusLabel[appointment.status] || appointment.status)}</td>
+          <td>${appointment.value != null ? `R$ ${escapeHtml(formatBRL(appointment.value))}` : '<span class="muted">—</span>'}</td>
           <td>${escapeHtml(appointment.notes || '-')}</td>
           <td>
             ${appointment.status !== 'cancelled' ? `
@@ -1262,6 +1274,47 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       `
     )
     .join('');
+
+  // HTML das mensagens da IA agrupadas por caso
+  const aiMessagesHtml = (() => {
+    if (!aiMessages.length) return '<p class="muted">Nenhuma análise gerada ainda.</p>';
+
+    // Agrupa por submission_id
+    const groups = new Map();
+    for (const msg of aiMessages) {
+      const key = msg.submission_id || 'geral';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(msg);
+    }
+
+    return [...groups.entries()].map(([subId, msgs]) => {
+      const caseLabel = subId === 'geral' ? 'Conversa geral' : `Caso #${subId}`;
+      const chatLink = subId === 'geral'
+        ? `/admin/chat?patientId=${patient.id}`
+        : `/admin/chat?submissionId=${subId}&patientId=${patient.id}`;
+
+      const bubbles = msgs.map((msg) => {
+        const isAi = msg.role === 'assistant';
+        // Quebra linhas para HTML
+        const contentHtml = escapeHtml(msg.content).replace(/\n/g, '<br>');
+        return `
+          <div class="ai-bubble ${isAi ? 'ai-bubble--ai' : 'ai-bubble--user'}">
+            <span class="ai-bubble-label">${isAi ? '🤖 IA' : '👩‍⚕️ Fran'}</span>
+            <div class="ai-bubble-text">${contentHtml}</div>
+            <span class="ai-bubble-time">${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="ai-case-group">
+          <div class="ai-case-header">
+            <strong>${caseLabel}</strong>
+            <a class="btn tiny" href="${chatLink}">Continuar conversa →</a>
+          </div>
+          <div class="ai-bubbles">${bubbles}</div>
+        </div>`;
+    }).join('');
+  })();
 
   const body = `
     <header class="panel header-panel">
@@ -1303,10 +1356,10 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         <table>
           <thead>
             <tr>
-              <th>Início</th>
-              <th>Fim</th>
+              <th>Data/Hora</th>
               <th>Título</th>
               <th>Status</th>
+              <th>Valor</th>
               <th>Observações</th>
               <th>Ação</th>
             </tr>
@@ -1315,6 +1368,16 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             ${appointmentsRows || '<tr><td colspan="6" class="muted">Nenhuma consulta marcada.</td></tr>'}
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h2 style="margin:0">Análise da IA</h2>
+        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Abrir chat completo →</a>
+      </div>
+      <div class="ai-messages-wrap">
+        ${aiMessagesHtml}
       </div>
     </section>
   `;
