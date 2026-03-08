@@ -2284,17 +2284,12 @@ async function callLlm(currentMessage, submissionId, patientId) {
     }
   }
 
+  // Imagens do caso para enviar à API (vision)
+  const imageContentBlocks = [];
+
   if (submissionId) {
     const submission = db
-      .prepare(
-        `
-        SELECT s.id, s.data_json,
-          (SELECT COUNT(*) FROM submission_files f WHERE f.submission_id = s.id AND f.category = 'face') AS qtd_face,
-          (SELECT COUNT(*) FROM submission_files f WHERE f.submission_id = s.id AND f.category = 'product') AS qtd_produtos
-        FROM submissions s
-        WHERE s.id = ?
-        `
-      )
+      .prepare('SELECT id, data_json FROM submissions WHERE id = ?')
       .get(submissionId);
 
     if (submission) {
@@ -2308,10 +2303,53 @@ async function callLlm(currentMessage, submissionId, patientId) {
         });
 
       contextBlocks.push(`Caso selecionado #${submission.id} para foco:`);
-      contextBlocks.push(`Fotos do rosto enviadas: ${submission.qtd_face}`);
-      contextBlocks.push(`Fotos de produtos enviadas: ${submission.qtd_produtos}`);
       contextBlocks.push('Resumo das respostas:');
       contextBlocks.push(summaryLines.join('\n'));
+
+      // Carregar imagens para envio via vision
+      const submissionFiles = db
+        .prepare(`SELECT category, stored_name, mime_type FROM submission_files WHERE submission_id = ? ORDER BY id ASC`)
+        .all(submissionId);
+
+      // Face: até 4 fotos com detail "high"; Produtos: até 6 com detail "low"
+      const faceFiles = submissionFiles.filter((f) => f.category === 'face').slice(0, 4);
+      const productFiles = submissionFiles.filter((f) => f.category === 'product').slice(0, 6);
+
+      const supportedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+      for (const file of faceFiles) {
+        const mime = file.mime_type && supportedMimes.includes(file.mime_type) ? file.mime_type : 'image/jpeg';
+        const filePath = path.join(uploadDir, file.stored_name);
+        if (fs.existsSync(filePath)) {
+          const b64 = fs.readFileSync(filePath).toString('base64');
+          imageContentBlocks.push({
+            type: 'image_url',
+            image_url: { url: `data:${mime};base64,${b64}`, detail: 'high' }
+          });
+        }
+      }
+
+      for (const file of productFiles) {
+        const mime = file.mime_type && supportedMimes.includes(file.mime_type) ? file.mime_type : 'image/jpeg';
+        const filePath = path.join(uploadDir, file.stored_name);
+        if (fs.existsSync(filePath)) {
+          const b64 = fs.readFileSync(filePath).toString('base64');
+          imageContentBlocks.push({
+            type: 'image_url',
+            image_url: { url: `data:${mime};base64,${b64}`, detail: 'low' }
+          });
+        }
+      }
+
+      if (imageContentBlocks.length > 0) {
+        const faceCount = faceFiles.filter((f) => {
+          return fs.existsSync(path.join(uploadDir, f.stored_name));
+        }).length;
+        const prodCount = productFiles.filter((f) => {
+          return fs.existsSync(path.join(uploadDir, f.stored_name));
+        }).length;
+        contextBlocks.push(`Imagens incluídas nesta mensagem: ${faceCount} foto(s) do rosto (alta resolução) e ${prodCount} foto(s) de produtos (baixa resolução).`);
+      }
     }
   }
 
@@ -2341,7 +2379,17 @@ async function callLlm(currentMessage, submissionId, patientId) {
     messages.push({ role: msg.role, content: msg.content });
   }
 
-  if (!recentMessages.length) {
+  // Monta a mensagem atual — com imagens se houver (vision)
+  if (imageContentBlocks.length > 0) {
+    // Inclui imagens junto com a mensagem de texto (vision)
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: currentMessage },
+        ...imageContentBlocks
+      ]
+    });
+  } else if (!recentMessages.length) {
     messages.push({ role: 'user', content: currentMessage });
   }
 
