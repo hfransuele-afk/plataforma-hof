@@ -38,6 +38,7 @@ backfillLegacyPatients();
 ensureAppointmentPatientNullable();
 ensureAppointmentValueColumn();
 ensurePatientNotesColumn();
+ensureSubmissionSignatureColumn();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -245,6 +246,13 @@ function ensurePatientNotesColumn() {
   const cols = db.prepare('PRAGMA table_info(patients)').all();
   if (!cols.some((c) => c.name === 'notes')) {
     db.exec('ALTER TABLE patients ADD COLUMN notes TEXT');
+  }
+}
+
+function ensureSubmissionSignatureColumn() {
+  const cols = db.prepare('PRAGMA table_info(submissions)').all();
+  if (!cols.some((c) => c.name === 'signature_data')) {
+    db.exec('ALTER TABLE submissions ADD COLUMN signature_data TEXT');
   }
 }
 
@@ -578,15 +586,26 @@ function renderField(field) {
   }
 
   if (field.type === 'checkbox-group') {
+    const hasOutro = (field.options || []).includes('Outro');
+    const outroInputId = `outro-text-${field.name}`;
+
     const options = (field.options || [])
-      .map(
-        (option) => `
+      .map((option) => {
+        const isOutro = hasOutro && option === 'Outro';
+        const onchange = isOutro
+          ? `onchange="(function(el){var t=document.getElementById('${outroInputId}');t.style.display=el.checked?'block':'none';if(!el.checked)t.querySelector('input').value='';})(this)"`
+          : '';
+        return `
           <label class="option-line">
-            <input type="checkbox" name="${name}" value="${escapeHtml(option)}">
+            <input type="checkbox" name="${name}" value="${escapeHtml(option)}" ${onchange}>
             <span>${escapeHtml(option)}</span>
           </label>
-        `
-      )
+          ${isOutro ? `
+          <div id="${outroInputId}" style="display:none;grid-column:1/-1;padding:4px 0 4px 4px">
+            <input type="text" name="${escapeHtml(field.name)}Outro" placeholder="Descreva sua suplementação…" style="max-width:420px;border-radius:11px">
+          </div>` : ''}
+        `;
+      })
       .join('');
 
     return `
@@ -762,6 +781,17 @@ app.post('/logout', requireAuth, (req, res) => {
 });
 
 app.get('/admin', requireAuth, (req, res) => {
+  // Filtro de período para faturamento
+  const revenueFrom = String(req.query.revenueFrom || '').slice(0, 10);
+  const revenueTo   = String(req.query.revenueTo   || '').slice(0, 10);
+  const hasFilter = /^\d{4}-\d{2}-\d{2}$/.test(revenueFrom) && /^\d{4}-\d{2}-\d{2}$/.test(revenueTo);
+
+  const revenueQuery = hasFilter
+    ? `SELECT COALESCE(SUM(value), 0) AS rev, COUNT(*) AS cnt FROM appointments WHERE date(start_at) BETWEEN ? AND ? AND status != 'cancelled'`
+    : `SELECT COALESCE(SUM(value), 0) AS rev, COUNT(*) AS cnt FROM appointments WHERE start_at >= ? AND status != 'cancelled'`;
+  const revenueParams = hasFilter ? [revenueFrom, revenueTo] : [nowIso(), nowIso()];
+  const revenueRow = db.prepare(revenueQuery).get(...revenueParams);
+
   const counters = db
     .prepare(
       `
@@ -769,11 +799,12 @@ app.get('/admin', requireAuth, (req, res) => {
         (SELECT COUNT(*) FROM patients) AS total_patients,
         (SELECT COUNT(*) FROM submissions) AS total_submissions,
         (SELECT COUNT(*) FROM patient_links WHERE is_used = 0) AS pending_links,
-        (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments,
-        (SELECT COALESCE(SUM(value), 0) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_revenue
+        (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments
       `
     )
-    .get(nowIso(), nowIso());
+    .get(nowIso());
+  counters.upcoming_revenue = revenueRow.rev;
+  counters.revenue_count = revenueRow.cnt;
 
   const rows = db
     .prepare(
@@ -800,33 +831,49 @@ app.get('/admin', requireAuth, (req, res) => {
     )
     .all();
 
-  const linkRows = rows
+  // Separa links pendentes dos já respondidos
+  const pendingRows = rows
+    .filter((row) => !row.is_used)
     .map((row) => {
       const patientLink = `${BASE_URL}/paciente/${row.token}`;
-      const status = row.is_used ? '<span class="chip done">Respondido</span>' : '<span class="chip pending">Aguardando</span>';
       const patientName = row.patient_name || '-';
       const patientEmail = row.patient_email || '-';
       const code = row.patient_code ? toCodeNumber(row.patient_code) : '----';
       const patientCell = row.resolved_patient_id
         ? `<a class="patient-link" href="/admin/patients/${row.resolved_patient_id}"><span class="patient-code">${escapeHtml(code)}</span> ${escapeHtml(patientName)}</a>`
         : `<span><span class="patient-code muted">${escapeHtml(code)}</span> ${escapeHtml(patientName)}</span>`;
-      const actions = row.submission_id
-        ? `<a class="btn tiny" href="/admin/submissions/${row.submission_id}">Abrir prontuário</a>`
-        : '<span class="muted">Sem resposta</span>';
 
       return `
         <tr>
-          <td>${status}</td>
+          <td><span class="chip pending">Aguardando</span></td>
           <td>${patientCell}</td>
           <td>${escapeHtml(patientEmail)}</td>
           <td>
             <div class="link-inline">
               <code>${escapeHtml(patientLink)}</code>
+              <button class="btn tiny copy-link-btn" type="button"
+                onclick="navigator.clipboard.writeText('${escapeHtml(patientLink)}').then(()=>{this.textContent='✓ Copiado';setTimeout(()=>this.textContent='Copiar',2000)})">
+                Copiar
+              </button>
             </div>
           </td>
-          <td>${actions}</td>
         </tr>
       `;
+    })
+    .join('');
+
+  // Links já respondidos: só mostra nome da paciente
+  const answeredLinks = rows.filter((row) => row.is_used);
+  const answeredChips = answeredLinks
+    .map((row) => {
+      const patientName = row.patient_name || 'Paciente';
+      const code = row.patient_code ? toCodeNumber(row.patient_code) : '';
+      if (row.resolved_patient_id) {
+        return `<a class="chip done answered-chip" href="/admin/patients/${row.resolved_patient_id}">
+          ${code ? `<span class="patient-code">${escapeHtml(code)}</span> ` : ''}${escapeHtml(patientName)} →
+        </a>`;
+      }
+      return `<span class="chip done answered-chip">${escapeHtml(patientName)}</span>`;
     })
     .join('');
 
@@ -870,8 +917,21 @@ app.get('/admin', requireAuth, (req, res) => {
         <article class="stat-card">
           <span>Faturamento previsto</span>
           <strong>R$ ${escapeHtml(formatBRL(counters.upcoming_revenue))}</strong>
+          <span class="muted" style="font-size:0.78rem">${hasFilter ? `${escapeHtml(revenueFrom)} → ${escapeHtml(revenueTo)}` : 'consultas futuras'}</span>
         </article>
       </div>
+
+      <form class="revenue-filter-form" method="get" action="/admin">
+        <span style="font-size:0.88rem;font-weight:600;color:var(--muted)">Filtrar faturamento por período:</span>
+        <div class="date-time-pair" style="max-width:380px">
+          <input type="date" name="revenueFrom" value="${escapeHtml(revenueFrom)}" placeholder="De">
+          <input type="date" name="revenueTo"   value="${escapeHtml(revenueTo)}"   placeholder="Até">
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" type="submit">Calcular</button>
+          ${hasFilter ? `<a class="btn" href="/admin">Limpar filtro</a>` : ''}
+        </div>
+      </form>
     </section>
 
     <section class="panel">
@@ -891,8 +951,16 @@ app.get('/admin', requireAuth, (req, res) => {
       </form>
     </section>
 
+    ${answeredLinks.length > 0 ? `
     <section class="panel">
-      <h2>Lista de links e respostas</h2>
+      <h2>Pacientes que responderam</h2>
+      <div class="answered-chips-wrap">
+        ${answeredChips}
+      </div>
+    </section>` : ''}
+
+    <section class="panel">
+      <h2>Links aguardando resposta</h2>
       <div class="table-wrap">
         <table>
           <thead>
@@ -901,11 +969,10 @@ app.get('/admin', requireAuth, (req, res) => {
               <th>Paciente</th>
               <th>E-mail</th>
               <th>Link</th>
-              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
-            ${linkRows || '<tr><td colspan="5" class="muted">Nenhum link criado ainda.</td></tr>'}
+            ${pendingRows || '<tr><td colspan="4" class="muted">Nenhum link pendente. Todos os questionários foram respondidos!</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1003,8 +1070,52 @@ app.get('/paciente/:token', (req, res) => {
         </label>
       </section>
 
-      <button class="btn primary block" type="submit">Enviar questionário</button>
+      <section class="section-block" id="assinatura">
+        <h2>Assinatura digital</h2>
+        <p class="muted" style="margin-bottom:12px">Assine abaixo para confirmar que as informações prestadas são verdadeiras.</p>
+        <div class="signature-wrap">
+          <canvas id="signatureCanvas" class="signature-canvas" width="600" height="180"></canvas>
+          <div class="signature-actions">
+            <button type="button" class="btn" onclick="clearSignature()">Limpar assinatura</button>
+          </div>
+        </div>
+        <input type="hidden" name="signatureData" id="signatureData">
+      </section>
+
+      <button class="btn primary block" type="submit" onclick="prepareSignature()">Enviar questionário</button>
     </form>
+
+    <script>
+    (function() {
+      const canvas = document.getElementById('signatureCanvas');
+      const ctx = canvas.getContext('2d');
+      let drawing = false;
+
+      function getPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const src = e.touches ? e.touches[0] : e;
+        return { x: (src.clientX - rect.left) * scaleX, y: (src.clientY - rect.top) * scaleY };
+      }
+
+      canvas.addEventListener('mousedown', (e) => { drawing = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); });
+      canvas.addEventListener('mousemove', (e) => { if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle = '#2f2520'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke(); });
+      canvas.addEventListener('mouseup', () => drawing = false);
+      canvas.addEventListener('mouseleave', () => drawing = false);
+      canvas.addEventListener('touchstart', (e) => { e.preventDefault(); drawing = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }, { passive: false });
+      canvas.addEventListener('touchmove', (e) => { e.preventDefault(); if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle = '#2f2520'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke(); }, { passive: false });
+      canvas.addEventListener('touchend', () => drawing = false);
+
+      window.clearSignature = function() { ctx.clearRect(0, 0, canvas.width, canvas.height); };
+      window.prepareSignature = function() {
+        const blank = document.createElement('canvas');
+        blank.width = canvas.width; blank.height = canvas.height;
+        const isEmpty = canvas.toDataURL() === blank.toDataURL();
+        if (!isEmpty) document.getElementById('signatureData').value = canvas.toDataURL('image/png');
+      };
+    })();
+    </script>
   `;
 
   res.send(layout({ title: 'Questionário', body }));
@@ -1065,8 +1176,10 @@ app.post('/paciente/:token', (req, res) => {
       return;
     }
 
+    const signatureData = String(req.body.signatureData || '').trim() || null;
+
     const insertSubmission = db.prepare(
-      'INSERT INTO submissions (patient_id, link_id, token, data_json, created_at) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO submissions (patient_id, link_id, token, data_json, signature_data, created_at) VALUES (?, ?, ?, ?, ?, ?)'
     );
 
     let savedPatientId = null;
@@ -1074,7 +1187,7 @@ app.post('/paciente/:token', (req, res) => {
 
     const tx = db.transaction(() => {
       const patientId = getOrCreatePatientFromPayload(payload, link.patient_id || null);
-      const result = insertSubmission.run(patientId, link.id, token, JSON.stringify(payload), nowIso());
+      const result = insertSubmission.run(patientId, link.id, token, JSON.stringify(payload), signatureData, nowIso());
       const submissionId = result.lastInsertRowid;
       savedPatientId = patientId;
       savedSubmissionId = submissionId;
@@ -1463,6 +1576,8 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
     eventsByDay.get(key).push(item);
   }
 
+  const todayKey = new Date().toISOString().slice(0, 10);
+
   const calendarCells = buildMonthGrid(monthDate)
     .map((cell) => {
       if (!cell) {
@@ -1470,31 +1585,42 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       }
 
       const events = eventsByDay.get(cell.dateKey) || [];
+      const isToday = cell.dateKey === todayKey;
+
       const eventsHtml = events
-        .map(
-          (event) => {
-            const statusBadge = event.status === 'confirmed'
-              ? '<span class="chip done" style="font-size:0.68rem;padding:1px 6px;">Confirmada</span>'
-              : event.status === 'cancelled'
-              ? '<span class="chip" style="font-size:0.68rem;padding:1px 6px;background:var(--danger);color:#fff;">Cancelada</span>'
-              : '<span class="chip pending" style="font-size:0.68rem;padding:1px 6px;">Agendada</span>';
-            return `
-            <div class="calendar-event-block">
-              ${event.patient_id
-                ? `<a class="calendar-event" href="/admin/patients/${event.patient_id}">
-                    <span>${escapeHtml(formatTime(event.start_at))}</span>
-                    <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong>
-                    <span>${escapeHtml(event.full_name)}</span>
-                    ${statusBadge}
-                    ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
-                  </a>`
-                : `<div class="calendar-event">
-                    <span>${escapeHtml(formatTime(event.start_at))}</span>
-                    <strong>${escapeHtml(event.title)}</strong>
-                    ${statusBadge}
-                    ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
-                  </div>`
-              }
+        .map((event) => {
+          const statusBadge = event.status === 'confirmed'
+            ? '<span class="chip done" style="font-size:0.68rem;padding:1px 6px;">Confirmada</span>'
+            : '<span class="chip pending" style="font-size:0.68rem;padding:1px 6px;">Agendada</span>';
+
+          const notesTooltip = event.notes ? `data-notes="${escapeHtml(event.notes)}"` : '';
+          const startParts = String(event.start_at || '').slice(0, 16).split('T');
+          const endParts  = String(event.end_at  || '').slice(0, 16).split('T');
+
+          return `
+            <div class="calendar-event-block" ${notesTooltip}>
+              <div class="calendar-event-info"
+                onclick="openApptModal({
+                  id:${event.id},
+                  title:${JSON.stringify(escapeHtml(event.title))},
+                  patientId:${event.patient_id || 'null'},
+                  patientName:${JSON.stringify(escapeHtml(event.full_name || ''))},
+                  startDate:'${startParts[0] || ''}',
+                  startTime:'${(startParts[1] || '').slice(0,5)}',
+                  endDate:'${endParts[0] || ''}',
+                  endTime:'${(endParts[1] || '').slice(0,5)}',
+                  notes:${JSON.stringify(escapeHtml(event.notes || ''))},
+                  value:'${event.value != null ? event.value : ''}'
+                })" title="${escapeHtml(event.notes || '')}">
+                <span class="evt-time">${escapeHtml(formatTime(event.start_at))}</span>
+                ${event.patient_id
+                  ? `<a class="evt-name" href="/admin/patients/${event.patient_id}" onclick="event.stopPropagation()">
+                      <strong>${escapeHtml(toCodeNumber(event.patient_code))}</strong> ${escapeHtml(event.full_name)}
+                    </a>`
+                  : `<span class="evt-name"><strong>${escapeHtml(event.title)}</strong></span>`}
+                ${statusBadge}
+                ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
+              </div>
               ${event.status !== 'cancelled' ? `
               <form method="post" action="/admin/agenda/${event.id}/status" style="display:inline">
                 <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
@@ -1502,18 +1628,16 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
                 ${event.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar">✓</button>` : ''}
                 <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar">✗</button>
               </form>` : ''}
-            </div>
-          `;
-          }
-        )
+            </div>`;
+        })
         .join('');
 
       const hasEvents = events.length > 0;
       return `
-        <article class="calendar-cell${hasEvents ? ' has-events' : ''}">
-          <header>${cell.day}</header>
+        <article class="calendar-cell${hasEvents ? ' has-events' : ''}${isToday ? ' is-today' : ''}">
+          <header class="calendar-day-num">${cell.day}</header>
           <div class="calendar-events">
-            ${eventsHtml || '<span class="muted">Sem consulta</span>'}
+            ${eventsHtml || '<span class="muted" style="font-size:0.78rem">—</span>'}
           </div>
         </article>
       `;
@@ -1555,6 +1679,69 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
         ${calendarCells}
       </div>
     </section>
+
+    <!-- Modal de edição de agendamento -->
+    <div class="appt-modal-overlay" id="apptModalOverlay" onclick="closeApptModal()" style="display:none"></div>
+    <div class="appt-modal" id="apptModal" style="display:none">
+      <div class="appt-modal-header">
+        <h3>Editar agendamento</h3>
+        <button class="btn ghost" type="button" onclick="closeApptModal()">✕</button>
+      </div>
+      <form class="form-stack" method="post" id="apptEditForm" action="">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+        <label class="field">
+          <span>Título</span>
+          <input type="text" name="title" id="editTitle" required>
+        </label>
+        <div class="field">
+          <span>Início</span>
+          <div class="date-time-pair">
+            <input type="date" name="startDate" id="editStartDate" required>
+            <input type="time" name="startTime" id="editStartTime" required>
+          </div>
+        </div>
+        <div class="field">
+          <span>Fim <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
+          <div class="date-time-pair">
+            <input type="date" name="endDate" id="editEndDate">
+            <input type="time" name="endTime" id="editEndTime">
+          </div>
+        </div>
+        <label class="field">
+          <span>Valor (R$)</span>
+          <input type="number" name="value" id="editValue" min="0" step="0.01">
+        </label>
+        <label class="field">
+          <span>Observações</span>
+          <textarea name="notes" id="editNotes" rows="3"></textarea>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" type="button" onclick="closeApptModal()">Cancelar</button>
+          <button class="btn primary" type="submit">Salvar alterações</button>
+        </div>
+      </form>
+    </div>
+    <script>
+      function openApptModal(data) {
+        document.getElementById('editTitle').value = data.title || '';
+        document.getElementById('editStartDate').value = data.startDate || '';
+        document.getElementById('editStartTime').value = data.startTime || '';
+        document.getElementById('editEndDate').value = data.endDate || '';
+        document.getElementById('editEndTime').value = data.endTime || '';
+        document.getElementById('editNotes').value = data.notes || '';
+        document.getElementById('editValue').value = data.value || '';
+        document.getElementById('apptEditForm').action = '/admin/agenda/' + data.id + '/edit';
+        document.getElementById('apptModal').style.display = 'block';
+        document.getElementById('apptModalOverlay').style.display = 'block';
+        document.body.style.overflow = 'hidden';
+      }
+      function closeApptModal() {
+        document.getElementById('apptModal').style.display = 'none';
+        document.getElementById('apptModalOverlay').style.display = 'none';
+        document.body.style.overflow = '';
+      }
+    </script>
 
     <section class="panel">
       <h2>Marcar nova consulta</h2>
@@ -1808,6 +1995,14 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
     ${renderFileList('Arquivos de Exames', examFiles)}
     ${renderImageList('Fotos do rosto', faceFiles)}
     ${renderImageList('Fotos de produtos', productFiles)}
+
+    ${submission.signature_data ? `
+    <section class="panel">
+      <h2>Assinatura digital</h2>
+      <div class="signature-display">
+        <img src="${submission.signature_data}" alt="Assinatura da paciente" style="max-width:400px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:8px;">
+      </div>
+    </section>` : ''}
   `;
 
   res.send(layout({ title: `Resposta ${submissionId}`, body, userEmail: req.session.adminEmail }));
@@ -2435,6 +2630,35 @@ async function callLlm(currentMessage, submissionId, patientId) {
 
   return String(content).trim();
 }
+
+// ─── Agenda: editar agendamento (modal) ────────────────────────────────────
+app.post('/admin/agenda/:id/edit', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+
+  const apptId = Number(req.params.id);
+  const title = String(req.body.title || '').trim();
+  const startAt = combineDateTime(req.body.startDate, req.body.startTime);
+  const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
+  const notes = String(req.body.notes || '').trim() || null;
+  const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
+  const returnMonth = String(req.body.returnMonth || '').trim();
+
+  if (!title || !startAt) {
+    const m = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
+    res.redirect(`/admin/agenda?month=${m}&error=${encodeURIComponent('Preencha título e horário.')}`);
+    return;
+  }
+
+  const appt = db.prepare('SELECT id, start_at FROM appointments WHERE id = ?').get(apptId);
+  if (!appt) { res.status(404).send('Agendamento não encontrado.'); return; }
+
+  db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=? WHERE id=?')
+    .run(title, startAt, endAt, notes, value, apptId);
+
+  const targetMonth = String(startAt).slice(0, 7);
+  const m = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : returnMonth;
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(m)}`);
+});
 
 // ─── Agenda: atualizar status de consulta ─────────────────────────────────
 app.post('/admin/agenda/:id/status', requireAuth, (req, res) => {

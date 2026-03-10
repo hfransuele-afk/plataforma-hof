@@ -249,6 +249,120 @@ legend {
   align-self: flex-end;
 }
 
+/* ─── Agenda: dia atual ────────────────────────────────── */
+
+.calendar-cell.is-today {
+  background: rgba(173, 95, 66, 0.06);
+  border: 2px solid var(--accent) !important;
+}
+
+.calendar-cell.is-today .calendar-day-num {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 2px 10px;
+  font-weight: 700;
+}
+
+/* ─── Agenda: evento clicável ──────────────────────────── */
+
+.calendar-event-info {
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.15s;
+}
+
+.calendar-event-info:hover { background: rgba(173, 95, 66, 0.08); }
+
+.evt-time { font-size: 0.75rem; color: var(--muted); font-weight: 600; }
+
+.evt-name { font-size: 0.84rem; color: var(--text); text-decoration: none; }
+.evt-name:hover { text-decoration: underline; }
+
+/* ─── Modal de edição de agendamento ───────────────────── */
+
+.appt-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 37, 32, 0.45);
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+
+.appt-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 101;
+  background: var(--bg-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 28px 24px;
+  width: min(480px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.appt-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.appt-modal-header h3 { margin: 0; }
+
+/* ─── Dashboard: pacientes que responderam ─────────────── */
+
+.answered-chips-wrap { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.answered-chip {
+  font-size: 0.85rem;
+  padding: 5px 14px;
+  border-radius: 20px;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.answered-chip:hover { opacity: 0.78; }
+
+/* ─── Copiar link ──────────────────────────────────────── */
+
+.link-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.copy-link-btn { flex-shrink: 0; white-space: nowrap; }
+
+/* ─── Filtro de faturamento ────────────────────────────── */
+
+.revenue-filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* ─── Assinatura digital ───────────────────────────────── */
+
+.signature-wrap { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+
+.signature-canvas {
+  border: 1.5px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  width: 100%;
+  max-width: 600px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
 /* ─── Focused Chat — Tela de bolhas (por paciente/caso) ─── */
 
 .focused-chat {
