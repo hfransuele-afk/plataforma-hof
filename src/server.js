@@ -1594,26 +1594,28 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
             ? '<span class="chip done" style="font-size:0.68rem;padding:1px 6px;">Confirmada</span>'
             : '<span class="chip pending" style="font-size:0.68rem;padding:1px 6px;">Agendada</span>';
 
-          const notesTooltip = event.notes ? `data-notes="${escapeHtml(event.notes)}"` : '';
           const startParts = String(event.start_at || '').slice(0, 16).split('T');
           const endParts  = String(event.end_at  || '').slice(0, 16).split('T');
 
+          // Dados do agendamento como data-attribute (JSON seguro, sem aspas duplas no atributo)
+          const apptJson = JSON.stringify({
+            id: event.id,
+            title: event.title || '',
+            patientId: event.patient_id || null,
+            patientName: event.full_name || '',
+            patientNotes: event.patient_notes || '',
+            startDate: startParts[0] || '',
+            startTime: (startParts[1] || '').slice(0, 5),
+            endDate: endParts[0] || '',
+            endTime: (endParts[1] || '').slice(0, 5),
+            notes: event.notes || '',
+            value: event.value != null ? String(event.value) : ''
+          }).replace(/'/g, '&#39;');
+
           return `
-            <div class="calendar-event-block" ${notesTooltip}>
-              <div class="calendar-event-info"
-                onclick="openApptModal({
-                  id:${event.id},
-                  title:${JSON.stringify(escapeHtml(event.title))},
-                  patientId:${event.patient_id || 'null'},
-                  patientName:${JSON.stringify(escapeHtml(event.full_name || ''))},
-                  patientNotes:${JSON.stringify(escapeHtml(event.patient_notes || ''))},
-                  startDate:'${startParts[0] || ''}',
-                  startTime:'${(startParts[1] || '').slice(0,5)}',
-                  endDate:'${endParts[0] || ''}',
-                  endTime:'${(endParts[1] || '').slice(0,5)}',
-                  notes:${JSON.stringify(escapeHtml(event.notes || ''))},
-                  value:'${event.value != null ? event.value : ''}'
-                })" title="${escapeHtml(event.notes || '')}">
+            <div class="calendar-event-block">
+              <div class="calendar-event-info" data-appt='${apptJson}'
+                title="${escapeHtml(event.notes || '')}">
                 <span class="evt-time">${escapeHtml(formatTime(event.start_at))}</span>
                 ${event.patient_id
                   ? `<a class="evt-name" href="/admin/patients/${event.patient_id}" onclick="event.stopPropagation()">
@@ -1836,6 +1838,17 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
           sel.appendChild(o);
         }
       }
+
+      // Delega cliques nos blocos de agendamento via data-appt
+      document.addEventListener('click', function(e) {
+        const el = e.target.closest('.calendar-event-info');
+        if (el && el.dataset.appt) {
+          try {
+            const data = JSON.parse(el.getAttribute('data-appt'));
+            window.openApptModal(data);
+          } catch(err) { console.error('appt parse error', err); }
+        }
+      });
 
       window.openApptModal = function(data) {
         // Cabeçalho
