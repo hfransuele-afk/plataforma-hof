@@ -789,7 +789,7 @@ app.get('/admin', requireAuth, (req, res) => {
   const revenueQuery = hasFilter
     ? `SELECT COALESCE(SUM(value), 0) AS rev, COUNT(*) AS cnt FROM appointments WHERE date(start_at) BETWEEN ? AND ? AND status != 'cancelled'`
     : `SELECT COALESCE(SUM(value), 0) AS rev, COUNT(*) AS cnt FROM appointments WHERE start_at >= ? AND status != 'cancelled'`;
-  const revenueParams = hasFilter ? [revenueFrom, revenueTo] : [nowIso(), nowIso()];
+  const revenueParams = hasFilter ? [revenueFrom, revenueTo] : [nowIso()];
   const revenueRow = db.prepare(revenueQuery).get(...revenueParams);
 
   const counters = db
