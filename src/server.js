@@ -1553,7 +1553,8 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       SELECT
         a.*,
         p.full_name,
-        p.patient_code
+        p.patient_code,
+        p.notes AS patient_notes
       FROM appointments a
       LEFT JOIN patients p ON p.id = a.patient_id
       WHERE substr(a.start_at, 1, 7) = ?
@@ -1605,6 +1606,7 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
                   title:${JSON.stringify(escapeHtml(event.title))},
                   patientId:${event.patient_id || 'null'},
                   patientName:${JSON.stringify(escapeHtml(event.full_name || ''))},
+                  patientNotes:${JSON.stringify(escapeHtml(event.patient_notes || ''))},
                   startDate:'${startParts[0] || ''}',
                   startTime:'${(startParts[1] || '').slice(0,5)}',
                   endDate:'${endParts[0] || ''}',
@@ -1684,63 +1686,231 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
     <div class="appt-modal-overlay" id="apptModalOverlay" onclick="closeApptModal()" style="display:none"></div>
     <div class="appt-modal" id="apptModal" style="display:none">
       <div class="appt-modal-header">
-        <h3>Editar agendamento</h3>
+        <div>
+          <h3 id="modalPatientName" style="margin:0;font-size:1.1rem"></h3>
+          <p class="muted" id="modalPatientNameSub" style="margin:4px 0 0;font-size:0.82rem"></p>
+        </div>
         <button class="btn ghost" type="button" onclick="closeApptModal()">✕</button>
       </div>
+
+      <!-- Observações clínicas da paciente (somente leitura) -->
+      <div id="modalPatientNotesWrap" style="display:none;margin-bottom:16px;padding:12px 14px;background:rgba(173,95,66,0.07);border-radius:11px;border-left:3px solid var(--accent)">
+        <p class="muted" style="font-size:0.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin:0 0 5px">📋 Observações clínicas</p>
+        <p id="modalPatientNotes" style="margin:0;font-size:0.88rem;white-space:pre-wrap"></p>
+      </div>
+
       <form class="form-stack" method="post" id="apptEditForm" action="">
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
         <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+        <!-- Hidden fields enviados ao server -->
+        <input type="hidden" name="startDate" id="editStartDate">
+        <input type="hidden" name="startTime" id="editStartTime">
+        <input type="hidden" name="endDate"   id="editEndDate">
+        <input type="hidden" name="endTime"   id="editEndTime">
+
         <label class="field">
-          <span>Título</span>
+          <span>Título / tipo de consulta</span>
           <input type="text" name="title" id="editTitle" required>
         </label>
+
         <div class="field">
-          <span>Início</span>
-          <div class="date-time-pair">
-            <input type="date" name="startDate" id="editStartDate" required>
-            <input type="time" name="startTime" id="editStartTime" required>
+          <span>Data de início</span>
+          <div class="ios-picker-row">
+            <select id="selStartDay"   class="ios-select"></select>
+            <select id="selStartMonth" class="ios-select">
+              <option value="01">Janeiro</option><option value="02">Fevereiro</option>
+              <option value="03">Março</option><option value="04">Abril</option>
+              <option value="05">Maio</option><option value="06">Junho</option>
+              <option value="07">Julho</option><option value="08">Agosto</option>
+              <option value="09">Setembro</option><option value="10">Outubro</option>
+              <option value="11">Novembro</option><option value="12">Dezembro</option>
+            </select>
+            <select id="selStartYear" class="ios-select"></select>
           </div>
         </div>
+
         <div class="field">
-          <span>Fim <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
-          <div class="date-time-pair">
-            <input type="date" name="endDate" id="editEndDate">
-            <input type="time" name="endTime" id="editEndTime">
+          <span>Horário de início</span>
+          <div class="ios-picker-row ios-picker-time">
+            <select id="selStartHour"   class="ios-select"></select>
+            <span style="font-size:1.2rem;font-weight:700;align-self:center">:</span>
+            <select id="selStartMinute" class="ios-select"></select>
           </div>
         </div>
+
+        <div class="field">
+          <span>Data de fim <span class="muted" style="font-size:0.8rem">(opcional)</span></span>
+          <div class="ios-picker-row">
+            <select id="selEndDay"   class="ios-select"><option value="">—</option></select>
+            <select id="selEndMonth" class="ios-select">
+              <option value="">—</option>
+              <option value="01">Janeiro</option><option value="02">Fevereiro</option>
+              <option value="03">Março</option><option value="04">Abril</option>
+              <option value="05">Maio</option><option value="06">Junho</option>
+              <option value="07">Julho</option><option value="08">Agosto</option>
+              <option value="09">Setembro</option><option value="10">Outubro</option>
+              <option value="11">Novembro</option><option value="12">Dezembro</option>
+            </select>
+            <select id="selEndYear" class="ios-select"><option value="">—</option></select>
+          </div>
+        </div>
+
+        <div class="field">
+          <span>Horário de fim <span class="muted" style="font-size:0.8rem">(opcional)</span></span>
+          <div class="ios-picker-row ios-picker-time">
+            <select id="selEndHour"   class="ios-select"><option value="">—</option></select>
+            <span style="font-size:1.2rem;font-weight:700;align-self:center">:</span>
+            <select id="selEndMinute" class="ios-select"><option value="">—</option></select>
+          </div>
+        </div>
+
         <label class="field">
           <span>Valor (R$)</span>
-          <input type="number" name="value" id="editValue" min="0" step="0.01">
+          <input type="number" name="value" id="editValue" min="0" step="0.01" placeholder="0,00">
         </label>
+
         <label class="field">
-          <span>Observações</span>
-          <textarea name="notes" id="editNotes" rows="3"></textarea>
+          <span>Observações do agendamento</span>
+          <textarea name="notes" id="editNotes" rows="3" placeholder="Ex.: trazer exames, revisar retinol…"></textarea>
         </label>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:4px">
           <button class="btn" type="button" onclick="closeApptModal()">Cancelar</button>
           <button class="btn primary" type="submit">Salvar alterações</button>
         </div>
       </form>
     </div>
+
     <script>
-      function openApptModal(data) {
+    (function() {
+      const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+      function fillDays(selId, selected) {
+        const sel = document.getElementById(selId);
+        sel.innerHTML = '';
+        for (let d = 1; d <= 31; d++) {
+          const o = document.createElement('option');
+          o.value = String(d).padStart(2, '0');
+          o.textContent = d;
+          if (String(d).padStart(2,'0') === selected) o.selected = true;
+          sel.appendChild(o);
+        }
+      }
+
+      function fillYears(selId, selected, optional) {
+        const sel = document.getElementById(selId);
+        sel.innerHTML = '';
+        if (optional) { const o = document.createElement('option'); o.value=''; o.textContent='—'; sel.appendChild(o); }
+        const cur = new Date().getFullYear();
+        for (let y = cur - 1; y <= cur + 4; y++) {
+          const o = document.createElement('option');
+          o.value = String(y);
+          o.textContent = String(y);
+          if (String(y) === selected) o.selected = true;
+          sel.appendChild(o);
+        }
+      }
+
+      function fillHours(selId, selected, optional) {
+        const sel = document.getElementById(selId);
+        sel.innerHTML = '';
+        if (optional) { const o = document.createElement('option'); o.value=''; o.textContent='—'; sel.appendChild(o); }
+        for (let h = 0; h <= 23; h++) {
+          const v = String(h).padStart(2,'0');
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          if (v === selected) o.selected = true;
+          sel.appendChild(o);
+        }
+      }
+
+      function fillMinutes(selId, selected, optional) {
+        const sel = document.getElementById(selId);
+        sel.innerHTML = '';
+        if (optional) { const o = document.createElement('option'); o.value=''; o.textContent='—'; sel.appendChild(o); }
+        for (let m = 0; m < 60; m += 5) {
+          const v = String(m).padStart(2,'0');
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          if (v === selected) o.selected = true;
+          sel.appendChild(o);
+        }
+      }
+
+      window.openApptModal = function(data) {
+        // Cabeçalho
+        const nameEl = document.getElementById('modalPatientName');
+        const subEl  = document.getElementById('modalPatientNameSub');
+        nameEl.textContent = data.patientName || data.title || 'Agendamento';
+        subEl.textContent  = data.patientName ? data.title : '';
+
+        // Observações clínicas da paciente
+        const notesWrap = document.getElementById('modalPatientNotesWrap');
+        const notesEl   = document.getElementById('modalPatientNotes');
+        if (data.patientNotes) {
+          notesEl.textContent  = data.patientNotes;
+          notesWrap.style.display = 'block';
+        } else {
+          notesWrap.style.display = 'none';
+        }
+
+        // Título e valor
         document.getElementById('editTitle').value = data.title || '';
-        document.getElementById('editStartDate').value = data.startDate || '';
-        document.getElementById('editStartTime').value = data.startTime || '';
-        document.getElementById('editEndDate').value = data.endDate || '';
-        document.getElementById('editEndTime').value = data.endTime || '';
-        document.getElementById('editNotes').value = data.notes || '';
         document.getElementById('editValue').value = data.value || '';
+        document.getElementById('editNotes').value = data.notes || '';
+
+        // Seletores de data/hora início
+        const [sy, sm, sd] = (data.startDate || '').split('-');
+        const [sh, smin]   = (data.startTime || '00:00').split(':');
+        const nearMin = String(Math.round((parseInt(smin||0))/5)*5).padStart(2,'0') === '60' ? '55' : String(Math.round((parseInt(smin||0))/5)*5).padStart(2,'0');
+
+        fillDays('selStartDay', sd || '01');
+        fillYears('selStartYear', sy, false);
+        fillHours('selStartHour', sh || '08', false);
+        fillMinutes('selStartMinute', nearMin || '00', false);
+        if (sm) document.getElementById('selStartMonth').value = sm;
+
+        // Seletores de data/hora fim
+        const [ey, em, ed] = (data.endDate || '').split('-');
+        const [eh, emin]   = (data.endTime  || '').split(':');
+        fillDays('selEndDay', ed || '01');
+        fillYears('selEndYear', ey || '', true);
+        fillHours('selEndHour', eh || '', true);
+        fillMinutes('selEndMinute', emin || '', true);
+        if (em) document.getElementById('selEndMonth').value = em;
+        else    document.getElementById('selEndMonth').value = '';
+
         document.getElementById('apptEditForm').action = '/admin/agenda/' + data.id + '/edit';
         document.getElementById('apptModal').style.display = 'block';
         document.getElementById('apptModalOverlay').style.display = 'block';
         document.body.style.overflow = 'hidden';
-      }
-      function closeApptModal() {
+      };
+
+      window.closeApptModal = function() {
         document.getElementById('apptModal').style.display = 'none';
         document.getElementById('apptModalOverlay').style.display = 'none';
         document.body.style.overflow = '';
-      }
+      };
+
+      // Combina selects → hidden inputs antes de submeter
+      document.getElementById('apptEditForm').addEventListener('submit', function() {
+        const sd = document.getElementById('selStartDay').value;
+        const sm = document.getElementById('selStartMonth').value;
+        const sy = document.getElementById('selStartYear').value;
+        const sh = document.getElementById('selStartHour').value;
+        const sn = document.getElementById('selStartMinute').value;
+        document.getElementById('editStartDate').value = sy && sm && sd ? sy+'-'+sm+'-'+sd : '';
+        document.getElementById('editStartTime').value = sh && sn ? sh+':'+sn : '';
+
+        const ed = document.getElementById('selEndDay').value;
+        const em = document.getElementById('selEndMonth').value;
+        const ey = document.getElementById('selEndYear').value;
+        const eh = document.getElementById('selEndHour').value;
+        const en = document.getElementById('selEndMinute').value;
+        document.getElementById('editEndDate').value = ey && em && ed ? ey+'-'+em+'-'+ed : '';
+        document.getElementById('editEndTime').value = eh && en ? eh+':'+en : '';
+      });
+    })();
     </script>
 
     <section class="panel">
