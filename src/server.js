@@ -2801,7 +2801,7 @@ async function callLlm(currentMessage, submissionId, patientId) {
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.4
+      reasoning_effort: 'high'
     })
   });
 
