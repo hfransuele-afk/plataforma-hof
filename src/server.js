@@ -174,6 +174,15 @@ function setupDatabase() {
       FOREIGN KEY(patient_id) REFERENCES patients(id),
       FOREIGN KEY(submission_id) REFERENCES submissions(id)
     );
+
+    CREATE TABLE IF NOT EXISTS ai_knowledge (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      titulo TEXT NOT NULL,
+      conteudo TEXT NOT NULL,
+      ativo INTEGER NOT NULL DEFAULT 1,
+      ordem INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn('patient_links', 'patient_id', 'patient_id INTEGER REFERENCES patients(id)');
@@ -887,6 +896,7 @@ app.get('/admin', requireAuth, (req, res) => {
         <a class="btn" href="/admin/patients">Pacientes</a>
         <a class="btn" href="/admin/agenda">Agenda</a>
         <a class="btn" href="/admin/chat">Chat LLM</a>
+        <a class="btn" href="/admin/ia-memoria">Memória da IA</a>
         <a class="btn" href="/admin/settings">Configurações</a>
         <form method="post" action="/logout">
           <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
@@ -2746,6 +2756,17 @@ async function callLlm(currentMessage, submissionId, patientId) {
 
   const messages = [{ role: 'system', content: systemPrompt }];
 
+  // Injeta conhecimento personalizado salvo pela profissional
+  const knowledgeEntries = db.prepare(
+    'SELECT titulo, conteudo FROM ai_knowledge WHERE ativo = 1 ORDER BY ordem ASC, id ASC'
+  ).all();
+  if (knowledgeEntries.length > 0) {
+    const knowledgeBlock =
+      '## Conhecimento e Protocolos da Clínica\n\n' +
+      knowledgeEntries.map((e) => `### ${e.titulo}\n${e.conteudo}`).join('\n\n');
+    messages.push({ role: 'system', content: knowledgeBlock });
+  }
+
   if (contextBlocks.length > 0) {
     messages.push({ role: 'system', content: contextBlocks.join('\n') });
   }
@@ -3045,6 +3066,110 @@ app.post('/admin/settings/password', requireAuth, (req, res) => {
   db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').run(newHash, admin.id);
 
   res.redirect('/admin/settings?ok=password');
+});
+
+// ─── Memória da IA ─────────────────────────────────────────────────────────
+app.get('/admin/ia-memoria', requireAuth, (req, res) => {
+  const entries = db.prepare('SELECT * FROM ai_knowledge ORDER BY ordem ASC, id ASC').all();
+
+  const rows = entries.map((e) => `
+    <tr>
+      <td>${escapeHtml(e.titulo)}</td>
+      <td style="max-width:380px;white-space:pre-wrap;word-break:break-word;font-size:0.85rem">${escapeHtml(e.conteudo.slice(0, 200))}${e.conteudo.length > 200 ? '…' : ''}</td>
+      <td>
+        <form method="post" action="/admin/ia-memoria/${e.id}/toggle" style="display:inline">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <button class="btn tiny${e.ativo ? ' primary' : ''}" type="submit" title="${e.ativo ? 'Ativo — clique para desativar' : 'Inativo — clique para ativar'}">
+            ${e.ativo ? 'Ativo' : 'Inativo'}
+          </button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/admin/ia-memoria/${e.id}/delete" style="display:inline" onsubmit="return confirm('Remover este bloco de conhecimento?')">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <button class="btn tiny danger" type="submit">Remover</button>
+        </form>
+      </td>
+    </tr>`).join('');
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Área da profissional</p>
+        <h1>Memória da IA</h1>
+        <p class="muted" style="margin-top:4px">Blocos de conhecimento enviados para a IA em todas as conversas (protocolos, produtos, preferências, instruções).</p>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin">Voltar ao painel</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.ok === 'saved' ? 'Bloco salvo com sucesso.' : req.query.ok === 'deleted' ? 'Bloco removido.' : req.query.ok === 'toggled' ? 'Status atualizado.' : null, 'success')}
+    ${renderAlert(req.query.error || null, 'error')}
+
+    <section class="panel">
+      <h2>Adicionar novo bloco de conhecimento</h2>
+      <form class="form-stack" method="post" action="/admin/ia-memoria" style="max-width:640px">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <label class="field">
+          <span>Título <small class="muted">(ex.: Protocolo anti-acne, Produtos favoritos, Regras de atendimento)</small></span>
+          <input type="text" name="titulo" required maxlength="120" placeholder="Ex.: Protocolo pele oleosa">
+        </label>
+        <label class="field">
+          <span>Conteúdo <small class="muted">(escreva livremente — a IA vai usar isso como referência em todas as respostas)</small></span>
+          <textarea name="conteudo" required rows="6" placeholder="Ex.: Para peles oleosas com acne, priorizar ativos como ácido salicílico, niacinamida e azaleico. Evitar óleos comedogênicos. Sempre perguntar sobre uso de isotretinoína..."></textarea>
+        </label>
+        <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+          <input type="number" name="ordem" value="0" min="0" max="999" style="width:70px">
+          <span>Ordem de prioridade <small class="muted">(menor número = mostrado primeiro para a IA)</small></span>
+        </label>
+        <button class="btn primary" type="submit">Salvar bloco</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Blocos salvos (${entries.length})</h2>
+      ${entries.length === 0
+        ? '<p class="muted">Nenhum bloco cadastrado ainda. Adicione acima.</p>'
+        : `<div style="overflow-x:auto">
+            <table class="table" style="width:100%">
+              <thead><tr><th>Título</th><th>Conteúdo (prévia)</th><th>Status</th><th></th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`}
+    </section>
+  `;
+
+  res.send(layout({ title: 'Memória da IA', body, userEmail: req.session.adminEmail }));
+});
+
+app.post('/admin/ia-memoria', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const titulo = String(req.body.titulo || '').trim();
+  const conteudo = String(req.body.conteudo || '').trim();
+  const ordem = parseInt(req.body.ordem) || 0;
+  if (!titulo || !conteudo) {
+    res.redirect('/admin/ia-memoria?error=' + encodeURIComponent('Título e conteúdo são obrigatórios.'));
+    return;
+  }
+  db.prepare(
+    'INSERT INTO ai_knowledge (titulo, conteudo, ativo, ordem, created_at) VALUES (?, ?, 1, ?, ?)'
+  ).run(titulo, conteudo, ordem, new Date().toISOString());
+  res.redirect('/admin/ia-memoria?ok=saved');
+});
+
+app.post('/admin/ia-memoria/:id/toggle', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const entry = db.prepare('SELECT id, ativo FROM ai_knowledge WHERE id = ?').get(req.params.id);
+  if (!entry) { res.status(404).send('Não encontrado.'); return; }
+  db.prepare('UPDATE ai_knowledge SET ativo = ? WHERE id = ?').run(entry.ativo ? 0 : 1, entry.id);
+  res.redirect('/admin/ia-memoria?ok=toggled');
+});
+
+app.post('/admin/ia-memoria/:id/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  db.prepare('DELETE FROM ai_knowledge WHERE id = ?').run(req.params.id);
+  res.redirect('/admin/ia-memoria?ok=deleted');
 });
 
 // ─── Backup: download do banco SQLite ─────────────────────────────────────
