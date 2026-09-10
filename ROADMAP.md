@@ -39,16 +39,22 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
 - Exportação/impressão de cada anamnese como PDF via `GET /admin/submissions/:id/print`.
 - Área de configurações (`/admin/settings`) com troca de senha da profissional.
 - Backup do banco SQLite disponível para download no painel (`/admin/backup`).
+- **🚀 Plataforma em produção em `https://clinic.franhanel.com`** (08/03/2026):
+  - Servidor Hetzner CX22 · IP `77.42.72.43`
+  - Node.js 22 + PM2 (restart automático, startup no boot)
+  - Nginx como proxy reverso
+  - SSL Let's Encrypt ativo (renova automaticamente até 06/06/2026)
+  - Firewall UFW configurado (SSH + HTTPS)
+  - Banco SQLite persistente em `/opt/plataforma-fran/storage/clinic.db`
+  - Healthcheck validado: `{"status":"ok","database":"ok"}`
 
 ### Em andamento
-- Criação do servidor VPS na Hetzner Cloud (CX22, Ubuntu 22.04).
-- Apontar DNS: registro `A clinic → IP do servidor` no painel do `franhanel.com`.
-- Configuração das variáveis de ambiente de produção no servidor (`.env`).
-- Execução do `scripts/setup-vps.sh` para subir a plataforma em `clinic.franhanel.com`.
+- Validação do fluxo completo em produção (link → resposta → agenda → LLM).
+- Testes em celular (link de paciente).
 
 ### Próximos passos (prioridade)
-1. Criar servidor VPS na Hetzner + apontar DNS de `clinic.franhanel.com`.
-2. Rodar `setup-vps.sh` e validar `https://clinic.franhanel.com/healthz`.
+1. ~~Criar servidor VPS na Hetzner + apontar DNS de `clinic.franhanel.com`.~~ ✅ Concluído.
+2. ~~Rodar `setup-vps.sh` e validar `https://clinic.franhanel.com/healthz`.~~ ✅ Concluído.
 3. ~~Configurar backup do SQLite via painel.~~ ✅ Concluído.
 4. ~~Definir fluxo de recuperação/troca de senha.~~ ✅ Concluído em `/admin/settings`.
 5. Melhorar permissões e trilha de auditoria (logs de acesso e ações).
@@ -60,12 +66,12 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
 
 ## Plano de Entregas
 
-### Sprint 1 (Operação real)
-- ~~Deploy no Render.~~ → Deploy no VPS Hetzner via `setup-vps.sh`.
-- Apontar DNS `clinic.franhanel.com` → IP do servidor.
-- Configurar variáveis de ambiente em produção (`.env` no servidor).
-- Validar upload de imagens em produção.
-- Testar fluxo completo: criação de link → resposta → agenda → análise com LLM.
+### Sprint 1 (Operação real) ✅ CONCLUÍDA
+- ~~Deploy no Render.~~ → Deploy no VPS Hetzner via `setup-vps.sh`. ✅
+- ~~Apontar DNS `clinic.franhanel.com` → IP do servidor.~~ ✅
+- ~~Configurar variáveis de ambiente em produção (`.env` no servidor).~~ ✅
+- Validar upload de imagens em produção. ⬅️ próximo
+- Testar fluxo completo: criação de link → resposta → agenda → análise com LLM. ⬅️ próximo
 
 ### Sprint 2 (Segurança e confiabilidade)
 - Backup diário.
@@ -84,7 +90,7 @@ Criar uma plataforma de anamnese clínica para skincare com envio por link para 
 - [x] Backup do banco disponível para download no painel.
 - [x] Confirmação/cancelamento de consultas na agenda.
 - [x] Impressão/exportação PDF de cada anamnese.
-- [ ] Login da profissional funcionando em produção.
+- [x] Login da profissional funcionando em produção.
 - [ ] Link de paciente abrindo em celular sem erro.
 - [ ] Resposta salva no painel corretamente.
 - [ ] Upload de rosto e produtos funcionando.

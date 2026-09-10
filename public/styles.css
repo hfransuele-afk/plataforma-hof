@@ -971,3 +971,678 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   IDENTIDADE VISUAL FRAN HANEL & NOVOS MÓDULOS CLÍNICOS E FINANCEIROS
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+/* Barra de Navegação Superior */
+.top-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 20px;
+  box-shadow: 0 4px 20px rgba(79, 52, 38, 0.06);
+  margin-bottom: 4px;
+}
+
+.top-nav-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.top-nav-logo {
+  font-family: 'Marcellus', serif;
+  font-size: 1.25rem;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.top-nav-sub {
+  font-family: 'Manrope', sans-serif;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.top-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.top-nav-item {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  transition: all 0.15s ease;
+}
+
+.top-nav-item:hover {
+  background: rgba(173, 95, 66, 0.1);
+  color: var(--accent);
+}
+
+.top-nav-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.top-nav-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Botões Especializados */
+.btn.whatsapp {
+  background: #25d366;
+  color: #fff;
+  border-color: #1ebd5a;
+}
+.btn.whatsapp:hover {
+  background: #1ebd5a;
+  color: #fff;
+}
+
+.btn.gold {
+  background: #c59b66;
+  color: #fff;
+  border-color: #b08754;
+}
+.btn.gold:hover {
+  background: #b08754;
+  color: #fff;
+}
+
+.btn.sage {
+  background: var(--accent-2);
+  color: #fff;
+  border-color: #5d8b76;
+}
+.btn.sage:hover {
+  background: #5d8b76;
+  color: #fff;
+}
+
+/* Hero / Cabeçalho da Pasta da Paciente */
+.patient-folder-hero {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 24px 28px;
+  box-shadow: var(--shadow);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.patient-folder-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.patient-avatar-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--accent) 0%, #c59b66 100%);
+  color: #fff;
+  font-family: 'Marcellus', serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  box-shadow: 0 6px 18px rgba(173, 95, 66, 0.28);
+}
+
+.patient-folder-title {
+  margin: 0 0 6px;
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+.patient-contact-line {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.88rem;
+  align-items: center;
+}
+
+.patient-contact-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dashed var(--line);
+}
+.patient-contact-link:hover {
+  color: var(--accent);
+}
+
+.quick-actions-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Navegação da Pasta (Abas / Scroll) */
+.folder-nav {
+  display: flex;
+  gap: 6px;
+  background: rgba(255, 250, 245, 0.7);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px;
+  overflow-x: auto;
+  box-shadow: 0 4px 14px rgba(79, 52, 38, 0.05);
+}
+
+.folder-tab {
+  padding: 8px 16px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.folder-tab:hover {
+  background: rgba(173, 95, 66, 0.08);
+  color: var(--accent);
+}
+
+.folder-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Badges e Pílulas */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.badge.signed {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.badge.marcacao {
+  background: #ede9fe;
+  color: #5b21b6;
+  border: 1px solid #ddd6fe;
+}
+
+.badge.antes {
+  background: #ffedd5;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+
+.badge.depois {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+/* Evoluções Clínicas do Prontuário */
+.evolution-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  padding-left: 20px;
+}
+
+.evolution-timeline::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 6px;
+  width: 2px;
+  background: var(--line);
+}
+
+.evolution-item {
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 20px;
+  box-shadow: 0 4px 14px rgba(79, 52, 38, 0.04);
+}
+
+.evolution-item::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  left: -20px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.evolution-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.evolution-date {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 0.95rem;
+}
+
+.evolution-procedure {
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: rgba(173, 95, 66, 0.1);
+  color: var(--text);
+  padding: 3px 10px;
+  border-radius: 8px;
+}
+
+.evolution-body {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+.evolution-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Caixa de Nova Evolução / Prontuário Contínuo */
+.new-evolution-box {
+  background: #fff;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  padding: 22px;
+  margin-top: 18px;
+}
+
+.new-evolution-box h3 {
+  margin: 0 0 14px;
+  font-size: 1.15rem;
+  color: var(--accent);
+}
+
+/* Galeria de Fotos Clínicas */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.gallery-card {
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(79, 52, 38, 0.05);
+  display: flex;
+  flex-direction: column;
+}
+
+.gallery-thumb-wrap {
+  aspect-ratio: 1;
+  width: 100%;
+  overflow: hidden;
+  background: #e9ded5;
+  cursor: pointer;
+  position: relative;
+}
+
+.gallery-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.2s ease;
+}
+
+.gallery-thumb-wrap:hover .gallery-thumb {
+  transform: scale(1.04);
+}
+
+.gallery-tag-pill {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+}
+
+.gallery-info {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+
+.gallery-caption {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-date {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+/* Termos de Consentimento (TCLE) */
+.consent-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.consent-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 4px 14px rgba(79, 52, 38, 0.05);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.consent-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.consent-card-title {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+
+.consent-card-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 4px;
+}
+
+.consent-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Área de Assinatura Digital (Canvas) */
+.signature-canvas-container {
+  border: 2px dashed var(--line);
+  border-radius: 12px;
+  background: #fff;
+  position: relative;
+  width: 100%;
+  max-width: 500px;
+  margin: 12px auto;
+  padding: 8px;
+  text-align: center;
+}
+
+.signature-canvas {
+  touch-action: none;
+  display: block;
+  width: 100%;
+  height: 160px;
+  cursor: crosshair;
+}
+
+.signature-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* Calculadora Financeira de Procedimentos & Rentabilidade */
+.calc-container {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .calc-container {
+    grid-template-columns: 1fr;
+  }
+}
+
+.calc-inputs-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.calc-receipt-card {
+  background: linear-gradient(145deg, #fffaf5 0%, #f6ebe1 100%);
+  border: 1px solid var(--accent);
+  border-radius: 16px;
+  padding: 22px;
+  box-shadow: 0 10px 30px rgba(173, 95, 66, 0.12);
+  position: sticky;
+  top: 20px;
+}
+
+.calc-receipt-title {
+  font-family: 'Marcellus', serif;
+  font-size: 1.2rem;
+  margin: 0 0 16px;
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.receipt-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+  padding: 7px 0;
+  border-bottom: 1px dashed rgba(211, 194, 177, 0.5);
+}
+
+.receipt-row.sub {
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding-left: 12px;
+}
+
+.receipt-row.deduct {
+  color: var(--danger);
+}
+
+.receipt-total-profit {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 2px solid var(--accent);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #065f46;
+}
+
+.profit-badge {
+  font-family: 'Marcellus', serif;
+  font-size: 1.45rem;
+  color: #047857;
+}
+
+.materials-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-top: 8px;
+}
+
+.material-item-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.82rem;
+  padding: 6px 8px;
+  border: 1px solid #ede4dc;
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.material-item-check input[type="number"] {
+  width: 50px;
+  padding: 3px 6px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+/* KPI Financeiro */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.kpi-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(79, 52, 38, 0.05);
+}
+
+.kpi-card.highlight {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border-color: #86efac;
+}
+
+.kpi-card span {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+  display: block;
+}
+
+.kpi-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.45rem;
+  font-family: 'Marcellus', serif;
+  color: var(--text);
+}
+
+.kpi-card.highlight strong {
+  color: #15803d;
+}
+
+/* Lightbox */
+.lightbox-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.lightbox-backdrop.active {
+  display: flex;
+}
+
+.lightbox-content {
+  max-width: 90vw;
+  max-height: 90vh;
+  position: relative;
+  text-align: center;
+}
+
+.lightbox-content img {
+  max-width: 90vw;
+  max-height: 85vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  color: #fff;
+  font-size: 2rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+

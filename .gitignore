@@ -8,3 +8,5 @@ storage/*.db-journal
 storage/uploads/*
 !storage/uploads/.gitkeep
 npm-debug.log*
+.claude/
+

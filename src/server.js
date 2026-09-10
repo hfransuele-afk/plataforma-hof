@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { formSections, fieldLabels } = require('./formSchema');
+const { consentTemplates } = require('./consentTemplates');
 
 dotenv.config();
 
@@ -39,6 +40,8 @@ ensureAppointmentPatientNullable();
 ensureAppointmentValueColumn();
 ensurePatientNotesColumn();
 ensureSubmissionSignatureColumn();
+ensureNewClinicalAndFinancialTables();
+migratePatientNotesToEvolutions();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -263,6 +266,168 @@ function ensureSubmissionSignatureColumn() {
   if (!cols.some((c) => c.name === 'signature_data')) {
     db.exec('ALTER TABLE submissions ADD COLUMN signature_data TEXT');
   }
+}
+
+function ensureNewClinicalAndFinancialTables() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS patient_evolutions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      appointment_id INTEGER,
+      procedure_name TEXT,
+      session_date TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS patient_media (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      stored_name TEXT NOT NULL,
+      mime_type TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS consent_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      procedure_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS patient_consents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      template_id INTEGER,
+      token TEXT NOT NULL UNIQUE,
+      procedure_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      signature_data TEXT,
+      signed_name TEXT,
+      signed_at TEXT,
+      client_ip TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id),
+      FOREIGN KEY(template_id) REFERENCES consent_templates(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS material_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      unit_type TEXT NOT NULL,
+      cost_per_unit REAL NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS clinic_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      default_tax_pct REAL DEFAULT 6.0,
+      default_card_fee_pct REAL DEFAULT 3.5,
+      default_clinic_split_pct REAL DEFAULT 30.0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS procedure_financials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER,
+      appointment_id INTEGER,
+      evolution_id INTEGER,
+      description TEXT NOT NULL,
+      gross_value REAL NOT NULL,
+      materials_cost REAL DEFAULT 0,
+      materials_json TEXT,
+      tax_pct REAL DEFAULT 0,
+      tax_amount REAL DEFAULT 0,
+      card_fee_pct REAL DEFAULT 0,
+      card_fee_amount REAL DEFAULT 0,
+      clinic_split_pct REAL DEFAULT 0,
+      clinic_split_amount REAL DEFAULT 0,
+      net_profit REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(patient_id) REFERENCES patients(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_evolutions_patient ON patient_evolutions(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_media_patient ON patient_media(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_consents_patient ON patient_consents(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_consents_token ON patient_consents(token);
+    CREATE INDEX IF NOT EXISTS idx_financials_patient ON procedure_financials(patient_id);
+  `);
+
+  const countTemplates = db.prepare('SELECT count(*) as c FROM consent_templates').get().c;
+  if (countTemplates === 0 && consentTemplates && consentTemplates.length) {
+    const insertTpl = db.prepare(
+      'INSERT INTO consent_templates (slug, title, procedure_name, content, created_at) VALUES (?, ?, ?, ?, ?)'
+    );
+    for (const tpl of consentTemplates) {
+      insertTpl.run(tpl.slug, tpl.title, tpl.procedure_name, tpl.content, nowIso());
+    }
+  }
+
+  const countMaterials = db.prepare('SELECT count(*) as c FROM material_costs').get().c;
+  if (countMaterials === 0) {
+    const defaultMaterials = [
+      { name: 'Toxina Botulínica 100U (Frasco)', unit_type: 'Frasco', cost_per_unit: 850.0 },
+      { name: 'Toxina Botulínica (por Unidade)', unit_type: 'Unidade (U)', cost_per_unit: 9.50 },
+      { name: 'Ácido Hialurônico 1ml (Seringa)', unit_type: 'Seringa 1ml', cost_per_unit: 420.0 },
+      { name: 'Bioestimulador de Colágeno (Frasco)', unit_type: 'Frasco', cost_per_unit: 980.0 },
+      { name: 'Kit Descartável (Luvas, Gaze, Agulha, Anestésico)', unit_type: 'Kit', cost_per_unit: 35.0 },
+      { name: 'Microcânula Estéril', unit_type: 'Unidade', cost_per_unit: 25.0 },
+      { name: 'Fio de PDO Espiculado (unidade)', unit_type: 'Unidade', cost_per_unit: 65.0 },
+      { name: 'Fio de PDO Liso (unidade)', unit_type: 'Unidade', cost_per_unit: 18.0 },
+      { name: 'Dose Peeling Químico', unit_type: 'Dose', cost_per_unit: 45.0 },
+      { name: 'Cartucho Microagulhamento', unit_type: 'Unidade', cost_per_unit: 30.0 }
+    ];
+    const insertMat = db.prepare(
+      'INSERT INTO material_costs (name, unit_type, cost_per_unit, is_active, created_at) VALUES (?, ?, ?, 1, ?)'
+    );
+    for (const m of defaultMaterials) {
+      insertMat.run(m.name, m.unit_type, m.cost_per_unit, nowIso());
+    }
+  }
+
+  const countSettings = db.prepare('SELECT count(*) as c FROM clinic_settings').get().c;
+  if (countSettings === 0) {
+    db.prepare(
+      'INSERT INTO clinic_settings (default_tax_pct, default_card_fee_pct, default_clinic_split_pct, updated_at) VALUES (?, ?, ?, ?)'
+    ).run(6.0, 3.5, 30.0, nowIso());
+  }
+}
+
+function migratePatientNotesToEvolutions() {
+  try {
+    const patientsWithNotes = db.prepare("SELECT id, notes, updated_at, created_at FROM patients WHERE notes IS NOT NULL AND trim(notes) != ''").all();
+    for (const p of patientsWithNotes) {
+      const hasEvolutions = db.prepare('SELECT count(*) as c FROM patient_evolutions WHERE patient_id = ?').get(p.id).c;
+      if (hasEvolutions === 0) {
+        db.prepare(`
+          INSERT INTO patient_evolutions (patient_id, procedure_name, session_date, notes, created_at, updated_at)
+          VALUES (?, 'Observações Iniciais', ?, ?, ?, ?)
+        `).run(p.id, p.created_at ? p.created_at.slice(0, 10) : nowIso().slice(0, 10), p.notes, p.created_at || nowIso(), p.updated_at || nowIso());
+      }
+    }
+  } catch (err) {
+    console.error('Erro ao migrar notas para evoluções:', err.message);
+  }
+}
+
+function toWhatsAppLink(phone, message = '') {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  if (!digits) return null;
+  const fullNumber = digits.length <= 11 ? `55${digits}` : digits;
+  const encodedMsg = message ? `?text=${encodeURIComponent(message)}` : '';
+  return `https://wa.me/${fullNumber}${encodedMsg}`;
 }
 
 function seedDefaultAdmin() {
@@ -657,9 +822,30 @@ function renderField(field) {
   `;
 }
 
-function layout({ title, body, userEmail = null }) {
+function layout({ title, body, userEmail = null, activeNav = '' }) {
   const authBlock = userEmail
-    ? `<div class="user-chip">Área privada: ${escapeHtml(userEmail)}</div>`
+    ? `
+      <nav class="top-nav">
+        <a href="/admin" class="top-nav-brand">
+          <span class="top-nav-logo">Fran Hanel</span>
+          <span class="top-nav-sub">Estética & Saúde</span>
+        </a>
+        <div class="top-nav-links">
+          <a class="top-nav-item ${activeNav === 'agenda' ? 'active' : ''}" href="/admin/agenda">📅 Agenda</a>
+          <a class="top-nav-item ${activeNav === 'patients' ? 'active' : ''}" href="/admin/patients">👥 Pacientes</a>
+          <a class="top-nav-item ${activeNav === 'submissions' ? 'active' : ''}" href="/admin">📋 Questionários</a>
+          <a class="top-nav-item ${activeNav === 'financeiro' ? 'active' : ''}" href="/admin/financeiro">💰 Financeiro</a>
+          <a class="top-nav-item ${activeNav === 'materiais' ? 'active' : ''}" href="/admin/materiais">🧪 Insumos</a>
+          <a class="top-nav-item ${activeNav === 'chat' ? 'active' : ''}" href="/admin/chat">🤖 Chat IA</a>
+          <a class="top-nav-item ${activeNav === 'ia-memoria' ? 'active' : ''}" href="/admin/ia-memoria">🧠 Memória IA</a>
+          <a class="top-nav-item ${activeNav === 'settings' ? 'active' : ''}" href="/admin/settings">⚙️ Configurações</a>
+        </div>
+        <div class="top-nav-user">
+          <span class="muted" style="font-size:0.8rem">${escapeHtml(userEmail)}</span>
+          <a href="/logout" class="btn tiny ghost" style="padding:4px 8px;font-size:0.75rem">Sair</a>
+        </div>
+      </nav>
+    `
     : '';
 
   return `
@@ -784,6 +970,12 @@ app.post('/logout', requireAuth, (req, res) => {
     return;
   }
 
+  req.session.destroy(() => {
+    res.redirect('/login');
+  });
+});
+
+app.get('/logout', (req, res) => {
   req.session.destroy(() => {
     res.redirect('/login');
   });
@@ -1252,6 +1444,222 @@ app.get('/obrigado', (_req, res) => {
   res.send(layout({ title: 'Obrigada', body }));
 });
 
+// ─── PÁGINA PÚBLICA DE ASSINATURA DE TERMO DE CONSENTIMENTO ─────────
+app.get('/termo/:token', (req, res) => {
+  const token = String(req.params.token || '');
+  const consent = db
+    .prepare(`
+      SELECT pc.*, p.full_name as patient_name, p.patient_code, ct.content as template_content
+      FROM patient_consents pc
+      JOIN patients p ON p.id = pc.patient_id
+      LEFT JOIN consent_templates ct ON ct.id = pc.template_id
+      WHERE pc.token = ?
+    `)
+    .get(token);
+
+  if (!consent) {
+    res.status(404).send(
+      layout({
+        title: 'Termo não encontrado',
+        body: '<section class="panel narrow"><h1>Termo não encontrado</h1><p>Este link é inválido ou expirou.</p></section>'
+      })
+    );
+    return;
+  }
+
+  // Se já estiver assinado
+  if (consent.status === 'signed') {
+    const signedDate = new Date(consent.signed_at).toLocaleString('pt-BR');
+    const body = `
+      <section class="panel narrow" style="text-align:center;padding:36px 24px">
+        <div style="font-size:3rem;margin-bottom:12px">✅</div>
+        <h1 style="margin:0 0 8px;font-size:1.5rem">Termo de Consentimento Assinado</h1>
+        <p style="color:var(--muted);font-size:0.95rem;margin:0 0 18px">
+          Obrigada, <strong>${escapeHtml(consent.signed_name || consent.patient_name)}</strong>!<br>
+          Seu consentimento para <strong>${escapeHtml(consent.procedure_name)}</strong> foi registrado com sucesso em <strong>${escapeHtml(signedDate)}</strong>.
+        </p>
+        ${consent.signature_data ? `
+          <div style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;max-width:320px;margin:0 auto 16px">
+            <p style="margin:0 0 6px;font-size:0.75rem;font-weight:700;color:var(--muted);text-transform:uppercase">Assinatura Registrada</p>
+            <img src="${escapeHtml(consent.signature_data)}" alt="Assinatura" style="max-width:100%;height:auto;display:block">
+          </div>
+        ` : ''}
+        <p class="muted" style="font-size:0.78rem">Código de segurança do prontuário: #${escapeHtml(toCodeNumber(consent.patient_code))}-${escapeHtml(consent.id)}</p>
+      </section>
+    `;
+    res.send(layout({ title: 'Termo Assinado', body }));
+    return;
+  }
+
+  // Se estiver pendente, exibe o termo para assinatura
+  const today = new Date().toLocaleDateString('pt-BR');
+  const termText = (consent.template_content || '')
+    .replace(/\{\{NOME_PACIENTE\}\}/g, consent.patient_name || 'Paciente')
+    .replace(/\{\{DATA\}\}/g, today);
+
+  const body = `
+    <section class="panel" style="max-width:760px;margin:0 auto">
+      <div style="text-align:center;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:20px">
+        <p class="eyebrow" style="margin:0 0 6px">Fran Hanel · Estética & Saúde</p>
+        <h1 style="margin:0 0 8px;font-size:1.6rem">${escapeHtml(consent.procedure_name)}</h1>
+        <p class="muted" style="margin:0;font-size:0.9rem">
+          Paciente: <strong>${escapeHtml(consent.patient_name)}</strong> · Data: ${escapeHtml(today)}
+        </p>
+      </div>
+
+      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:22px;white-space:pre-wrap;line-height:1.65;font-size:0.94rem;color:var(--text);max-height:380px;overflow-y:auto">
+${escapeHtml(termText)}
+      </div>
+
+      <form method="post" action="/termo/${escapeHtml(token)}" id="termSignForm">
+        <input type="hidden" name="signatureData" id="termSignatureData">
+
+        <label class="field" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:18px;background:#fffaf6;padding:14px;border:1px solid var(--line);border-radius:12px">
+          <input type="checkbox" name="agreed" id="termAgreedCheck" required style="margin-top:3px;transform:scale(1.2)">
+          <span style="font-size:0.9rem;line-height:1.4">
+            Declaro que li atentamente, compreendi todas as informações, riscos, cuidados pós-procedimento e concordo livremente com a realização de <strong>${escapeHtml(consent.procedure_name)}</strong>.
+          </span>
+        </label>
+
+        <label class="field" style="margin-bottom:18px">
+          <span>Nome Completo da Paciente *</span>
+          <input type="text" name="signedName" value="${escapeHtml(consent.patient_name)}" required placeholder="Seu nome completo">
+        </label>
+
+        <!-- Canvas de Assinatura -->
+        <div class="field">
+          <span>Assine aqui com o dedo (no celular) ou com o mouse *</span>
+          <div class="signature-canvas-container">
+            <canvas id="termCanvas" class="signature-canvas" width="480" height="170"></canvas>
+            <p class="signature-hint">Desenhe sua assinatura no retângulo acima</p>
+          </div>
+          <div style="text-align:right">
+            <button type="button" class="btn tiny ghost" onclick="clearTermCanvas()">Limpar Assinatura</button>
+          </div>
+        </div>
+
+        <div style="margin-top:24px;text-align:center">
+          <button class="btn primary" type="submit" style="padding:14px 32px;font-size:1.05rem;width:100%;max-width:380px">
+            ✍️ Confirmar e Assinar Termo
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <script>
+      const canvas = document.getElementById('termCanvas');
+      const ctx = canvas.getContext('2d');
+      let drawing = false;
+      let hasDrawn = false;
+
+      function resizeCanvas() {
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * ratio;
+        canvas.height = 170 * ratio;
+        ctx.scale(ratio, ratio);
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = '#2c231e';
+      }
+
+      window.addEventListener('resize', resizeCanvas);
+      setTimeout(resizeCanvas, 50);
+
+      function getPos(e) {
+        const r = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: clientX - r.left, y: clientY - r.top };
+      }
+
+      function startDraw(e) {
+        drawing = true;
+        hasDrawn = true;
+        const pos = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+        if (e.touches) e.preventDefault();
+      }
+
+      function draw(e) {
+        if (!drawing) return;
+        const pos = getPos(e);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+        if (e.touches) e.preventDefault();
+      }
+
+      function stopDraw() {
+        if (!drawing) return;
+        drawing = false;
+        ctx.closePath();
+      }
+
+      canvas.addEventListener('mousedown', startDraw);
+      canvas.addEventListener('mousemove', draw);
+      window.addEventListener('mouseup', stopDraw);
+
+      canvas.addEventListener('touchstart', startDraw, { passive: false });
+      canvas.addEventListener('touchmove', draw, { passive: false });
+      window.addEventListener('touchend', stopDraw);
+
+      function clearTermCanvas() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        hasDrawn = false;
+        document.getElementById('termSignatureData').value = '';
+      }
+
+      document.getElementById('termSignForm').addEventListener('submit', function(e) {
+        if (!hasDrawn) {
+          alert('Por favor, faça sua assinatura digital no espaço indicado antes de enviar.');
+          e.preventDefault();
+          return;
+        }
+        document.getElementById('termSignatureData').value = canvas.toDataURL('image/png');
+      });
+    </script>
+  `;
+
+  res.send(layout({ title: `Termo — ${consent.procedure_name}`, body }));
+});
+
+app.post('/termo/:token', (req, res) => {
+  const token = String(req.params.token || '');
+  const consent = db.prepare('SELECT * FROM patient_consents WHERE token = ?').get(token);
+
+  if (!consent) {
+    res.status(404).send('Termo não encontrado.');
+    return;
+  }
+
+  if (consent.status === 'signed') {
+    res.redirect(`/termo/${encodeURIComponent(token)}`);
+    return;
+  }
+
+  const signatureData = String(req.body.signatureData || req.body.signature_data || '').trim();
+  const signedName = String(req.body.signedName || req.body.signed_name || '').trim();
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;
+
+  if (!signatureData || !signatureData.startsWith('data:image/png')) {
+    res.status(400).send(layout({
+      title: 'Assinatura obrigatória',
+      body: '<section class="panel narrow"><h1>Assinatura obrigatória</h1><p>Por favor, assine no campo indicado antes de confirmar.</p><p><a href="javascript:history.back()">Voltar e assinar</a></p></section>'
+    }));
+    return;
+  }
+
+  db.prepare(`
+    UPDATE patient_consents
+    SET status = 'signed', signature_data = ?, signed_name = ?, signed_at = ?, client_ip = ?
+    WHERE id = ?
+  `).run(signatureData, signedName, nowIso(), String(clientIp), consent.id);
+
+  res.redirect(`/termo/${encodeURIComponent(token)}`);
+});
+
 app.get('/admin/patients', requireAuth, (req, res) => {
   const patients = db
     .prepare(
@@ -1329,196 +1737,772 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     return;
   }
 
+  // 1. Histórico de questionários/anamneses
   const submissions = db
     .prepare(
       `
       SELECT
-        s.id,
-        s.created_at,
-        json_extract(s.data_json, '$.queixaPrincipal') AS queixa_principal,
-        json_extract(s.data_json, '$.expectativaConsultoria') AS expectativa
+        s.*,
+        l.token AS link_token
       FROM submissions s
+      LEFT JOIN patient_links l ON l.id = s.link_id
       WHERE s.patient_id = ?
       ORDER BY s.created_at DESC
       `
     )
     .all(patientId);
 
+  const latestSubmission = submissions[0] || null;
+  let latestData = {};
+  let submissionFiles = [];
+  if (latestSubmission) {
+    try {
+      latestData = JSON.parse(latestSubmission.data_json || '{}');
+    } catch (_e) {
+      latestData = {};
+    }
+    submissionFiles = db
+      .prepare('SELECT * FROM submission_files WHERE submission_id = ? ORDER BY id ASC')
+      .all(latestSubmission.id);
+  }
+
+  // Link pendente (se houver)
+  const pendingLink = db
+    .prepare('SELECT * FROM patient_links WHERE patient_id = ? AND is_used = 0 ORDER BY id DESC LIMIT 1')
+    .get(patientId);
+
+  // 2. Evoluções do Prontuário
+  const evolutions = db
+    .prepare('SELECT * FROM patient_evolutions WHERE patient_id = ? ORDER BY session_date DESC, id DESC')
+    .all(patientId);
+
+  // 3. Galeria de Fotos / Marcações
+  const mediaList = db
+    .prepare('SELECT * FROM patient_media WHERE patient_id = ? ORDER BY created_at DESC')
+    .all(patientId);
+
+  // 4. Termos de Consentimento (TCLE)
+  const consents = db
+    .prepare(
+      `
+      SELECT
+        pc.*,
+        ct.title AS template_title,
+        ct.slug AS template_slug
+      FROM patient_consents pc
+      LEFT JOIN consent_templates ct ON ct.id = pc.template_id
+      WHERE pc.patient_id = ?
+      ORDER BY pc.created_at DESC
+      `
+    )
+    .all(patientId);
+
+  // 5. Registros Financeiros / Procedimentos
+  const financials = db
+    .prepare('SELECT * FROM procedure_financials WHERE patient_id = ? ORDER BY created_at DESC')
+    .all(patientId);
+
+  // 6. Consultas na Agenda
   const appointments = db
-    .prepare(
-      `
-      SELECT id, title, start_at, end_at, notes, status, value
-      FROM appointments
-      WHERE patient_id = ?
-      ORDER BY start_at DESC
-      LIMIT 200
-      `
-    )
+    .prepare('SELECT * FROM appointments WHERE patient_id = ? ORDER BY start_at DESC LIMIT 50')
     .all(patientId);
 
-  // Mensagens da IA para esta paciente (pré-análises e conversas)
+  // 7. Mensagens da IA
   const aiMessages = db
-    .prepare(
-      `
-      SELECT m.id, m.role, m.content, m.submission_id, m.created_at
-      FROM chat_messages m
-      WHERE m.patient_id = ?
-      ORDER BY m.created_at ASC
-      `
-    )
+    .prepare('SELECT * FROM chat_messages WHERE patient_id = ? ORDER BY created_at ASC')
     .all(patientId);
 
-  const submissionsRows = submissions
-    .map(
-      (submission) => `
-        <tr>
-          <td>#${submission.id}</td>
-          <td>${escapeHtml(formatDateTime(submission.created_at))}</td>
-          <td>${safeFieldValue(submission.queixa_principal)}</td>
-          <td>${safeFieldValue(submission.expectativa)}</td>
-          <td><a class="btn tiny" href="/admin/submissions/${submission.id}">Abrir</a></td>
-        </tr>
-      `
-    )
-    .join('');
+  // Insumos ativos e configurações da clínica para calculadora
+  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY name ASC').all();
+  const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
+    default_tax_pct: 6.0,
+    default_card_fee_pct: 3.5,
+    default_clinic_split_pct: 30.0
+  };
+  const consentTemplatesList = db.prepare('SELECT * FROM consent_templates ORDER BY title ASC').all();
 
-  const statusLabel = { scheduled: 'Agendada', confirmed: 'Confirmada', cancelled: 'Cancelada' };
+  // ─── Renderização da Ficha de Anamnese ───────────────────
+  let anamneseSectionHtml = '';
+  if (latestSubmission) {
+    const facePhotos = submissionFiles.filter((f) => f.category === 'face');
+    const productPhotos = submissionFiles.filter((f) => f.category === 'product');
+    const examFiles = submissionFiles.filter((f) => f.category === 'exam');
+
+    const renderImgGrid = (list) => {
+      if (!list.length) return '<p class="muted" style="font-size:0.84rem">Nenhuma foto enviada.</p>';
+      return `
+        <div class="gallery-grid" style="grid-template-columns:repeat(auto-fill, minmax(130px, 1fr));gap:10px;">
+          ${list.map((f) => `
+            <div class="gallery-card" onclick="openLightbox('/admin/file/${f.id}')">
+              <div class="gallery-thumb-wrap">
+                <img class="gallery-thumb" src="/admin/file/${f.id}" alt="${escapeHtml(f.original_name)}" loading="lazy">
+              </div>
+              <div class="gallery-info" style="padding:6px 8px">
+                <span class="gallery-caption" style="font-size:0.75rem">${escapeHtml(f.original_name)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    };
+
+    const sectionsAccordion = formSections
+      .map((sec) => {
+        const rows = sec.fields
+          .map((f) => {
+            const val = latestData[f.name];
+            if (val === undefined || val === null || val === '') return '';
+            return `
+              <div style="display:grid;grid-template-columns:240px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid #f0e6de;font-size:0.88rem">
+                <strong style="color:var(--text)">${escapeHtml(f.label)}:</strong>
+                <span style="color:var(--text)">${safeFieldValue(val)}</span>
+              </div>
+            `;
+          })
+          .filter(Boolean)
+          .join('');
+
+        if (!rows) return '';
+        return `
+          <div style="margin-bottom:12px;background:var(--bg-2);padding:14px 18px;border-radius:12px;border:1px solid var(--line)">
+            <h4 style="margin:0 0 8px;font-size:1rem;color:var(--accent)">${escapeHtml(sec.title)}</h4>
+            ${rows}
+          </div>
+        `;
+      })
+      .join('');
+
+    anamneseSectionHtml = `
+      <section class="panel" id="anamnese">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <h2 style="margin:0">Ficha de Anamnese Clínica</h2>
+              <span class="badge signed">Preenchida</span>
+            </div>
+            <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+              Enviada em ${escapeHtml(formatDateTime(latestSubmission.created_at))} · Submissão #${latestSubmission.id}
+            </p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn tiny" onclick="const b = document.getElementById('anamneseDetailsWrap'); b.style.display = b.style.display==='none'?'block':'none'">
+              👁️ Expandir / Recolher Respostas
+            </button>
+            <a class="btn tiny gold" href="/admin/submissions/${latestSubmission.id}/print" target="_blank" rel="noopener">
+              🖨️ Imprimir / PDF
+            </a>
+          </div>
+        </div>
+
+        <!-- Destaques Rápidos da Anamnese -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:14px;background:#fffaf6;border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:18px">
+          <div>
+            <span class="eyebrow" style="font-size:0.72rem">Queixa Principal</span>
+            <p style="margin:4px 0 0;font-weight:600;font-size:0.92rem;color:var(--accent)">
+              ${escapeHtml(latestData.queixaPrincipal || 'Não informada')}
+            </p>
+          </div>
+          <div>
+            <span class="eyebrow" style="font-size:0.72rem">Expectativa com Tratamento</span>
+            <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
+              ${escapeHtml(latestData.expectativaConsultoria || 'Não informada')}
+            </p>
+          </div>
+          <div>
+            <span class="eyebrow" style="font-size:0.72rem">Alergias / Medicamentos</span>
+            <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
+              ${escapeHtml(latestData.historicoAlergias || latestData.medicamentoContinuo || 'Nenhum relatado')}
+            </p>
+          </div>
+          <div>
+            <span class="eyebrow" style="font-size:0.72rem">Gestação / Lactação</span>
+            <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
+              ${escapeHtml(latestData.gravidaOuAmamentando || 'Não')}
+            </p>
+          </div>
+        </div>
+
+        <!-- Fotos enviadas na anamnese -->
+        <div style="margin-bottom:18px">
+          <h3 style="margin:0 0 10px;font-size:1rem;color:var(--text)">📸 Fotos enviadas pela paciente</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px">
+            <div style="background:var(--bg-2);padding:14px;border-radius:12px;border:1px solid var(--line)">
+              <p style="margin:0 0 8px;font-weight:700;font-size:0.85rem">Fotos do Rosto (${facePhotos.length})</p>
+              ${renderImgGrid(facePhotos)}
+            </div>
+            <div style="background:var(--bg-2);padding:14px;border-radius:12px;border:1px solid var(--line)">
+              <p style="margin:0 0 8px;font-weight:700;font-size:0.85rem">Fotos de Produtos em Uso (${productPhotos.length})</p>
+              ${renderImgGrid(productPhotos)}
+            </div>
+            ${examFiles.length ? `
+              <div style="background:var(--bg-2);padding:14px;border-radius:12px;border:1px solid var(--line)">
+                <p style="margin:0 0 8px;font-weight:700;font-size:0.85rem">Exames Anexados (${examFiles.length})</p>
+                ${renderImgGrid(examFiles)}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- Respostas Detalhadas (Accordion) -->
+        <div id="anamneseDetailsWrap" style="display:none;margin-top:16px">
+          <h3 style="margin:0 0 12px;font-size:1.05rem">Todas as respostas do questionário</h3>
+          ${sectionsAccordion}
+
+          <!-- Assinatura da Anamnese -->
+          ${latestSubmission.signature_data ? `
+            <div style="margin-top:14px;background:#fff;padding:14px;border-radius:12px;border:1px solid var(--line);max-width:360px">
+              <p style="margin:0 0 6px;font-size:0.8rem;font-weight:700;color:var(--muted);text-transform:uppercase">Assinatura Digital no Questionário</p>
+              <img src="${escapeHtml(latestSubmission.signature_data)}" alt="Assinatura da paciente" style="max-width:100%;height:auto;border-bottom:1px solid #ddd">
+              <p style="margin:4px 0 0;font-size:0.75rem;color:var(--muted)">Assinado em ${escapeHtml(formatDateTime(latestSubmission.created_at))}</p>
+            </div>
+          ` : ''}
+        </div>
+      </section>
+    `;
+  } else {
+    // Caso ainda não tenha preenchido anamnese
+    let pendingLinkHtml = '';
+    if (pendingLink) {
+      const linkUrl = `${BASE_URL}/paciente/${pendingLink.token}`;
+      const msg = `Olá ${patient.full_name}! Segue o seu link exclusivo para preenchimento da ficha de anamnese antes da sua consulta: ${linkUrl}`;
+      const waLink = toWhatsAppLink(patient.phone, msg);
+
+      pendingLinkHtml = `
+        <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+          <input type="text" readonly value="${escapeHtml(linkUrl)}" id="anamnesePendingInput" style="padding:8px 12px;width:340px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:0.85rem">
+          <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('anamnesePendingInput').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar link',2000)">Copiar link</button>
+          ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp da Paciente</a>` : ''}
+        </div>
+      `;
+    } else {
+      pendingLinkHtml = `
+        <form method="post" action="/admin/patients/${patient.id}/generate-link" style="margin-top:12px">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <button class="btn primary" type="submit">📲 Gerar e Enviar Link de Anamnese</button>
+        </form>
+      `;
+    }
+
+    anamneseSectionHtml = `
+      <section class="panel" id="anamnese" style="border-left:4px solid #c59b66">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h2 style="margin:0">Ficha de Anamnese Clínica</h2>
+          <span class="badge pending">Aguardando Preenchimento</span>
+        </div>
+        <p style="margin:8px 0 0;font-size:0.92rem;color:var(--muted)">
+          Esta paciente ainda não respondeu ao questionário clínico de anamnese. Envie o link exclusivo para ela preencher no celular.
+        </p>
+        ${pendingLinkHtml}
+      </section>
+    `;
+  }
+
+  // ─── Renderização da Galeria de Fotos Clínicas (Marcações, Antes & Depois) ─
+  const renderMediaCard = (m) => {
+    const tagBadge = {
+      marcacao: '<span class="badge marcacao">Marcação</span>',
+      antes: '<span class="badge antes">Antes</span>',
+      depois: '<span class="badge depois">Depois</span>',
+      geral: '<span class="badge">Acompanhamento</span>'
+    }[m.category] || '<span class="badge">Foto</span>';
+
+    return `
+      <div class="gallery-card">
+        <div class="gallery-thumb-wrap" onclick="openLightbox('/admin/media/${m.id}')">
+          <span class="gallery-tag-pill">${tagBadge}</span>
+          <img class="gallery-thumb" src="/admin/media/${m.id}" alt="${escapeHtml(m.original_name)}" loading="lazy">
+        </div>
+        <div class="gallery-info">
+          <span class="gallery-caption">${escapeHtml(m.notes || m.original_name)}</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
+            <span class="gallery-date">${escapeHtml(formatDateTime(m.created_at))}</span>
+            <form method="post" action="/admin/patients/${patient.id}/media/${m.id}/delete" onsubmit="return confirm('Deseja excluir esta foto?')" style="margin:0">
+              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+              <button class="btn tiny danger" style="padding:2px 6px;font-size:0.72rem" type="submit">Excluir</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  const galleryHtml = `
+    <section class="panel" id="galeria">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <h2 style="margin:0">Galeria Clínica — Marcações, Antes & Depois</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+            Carregue fotos de planejamento, marcações com anestésico/lápis, antes e depois de procedimentos.
+          </p>
+        </div>
+        <button class="btn tiny primary" onclick="const f = document.getElementById('uploadMediaBox'); f.style.display = f.style.display==='none'?'block':'none'">
+          + Carregar Novas Fotos
+        </button>
+      </div>
+
+      <!-- Formulário de Upload de Fotos Clínicas -->
+      <div id="uploadMediaBox" style="display:none;background:var(--bg-2);padding:18px;border-radius:14px;border:1px dashed var(--accent);margin-bottom:18px">
+        <form method="post" action="/admin/patients/${patient.id}/media" enctype="multipart/form-data">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <div class="form-grid">
+            <label class="field">
+              <span>Selecionar Fotos (pode marcar várias) *</span>
+              <input type="file" name="mediaFiles" multiple accept="image/*" required>
+            </label>
+            <label class="field">
+              <span>Categoria da Imagem *</span>
+              <select name="category" required>
+                <option value="marcacao">🏷️ Marcação Clínica / Mapeamento Facial</option>
+                <option value="antes">🏷️ Foto de Antes</option>
+                <option value="depois">🏷️ Foto de Depois</option>
+                <option value="geral">🏷️ Acompanhamento / Retorno / Outro</option>
+              </select>
+            </label>
+            <label class="field" style="grid-column:1/-1">
+              <span>Legenda / Observação</span>
+              <input type="text" name="notes" placeholder="Ex.: Marcação glabela e frontal 42U · Antes preenchimento malar e queixo">
+            </label>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px">
+            <button class="btn primary" type="submit">📤 Salvar Fotos na Pasta</button>
+            <button class="btn ghost" type="button" onclick="document.getElementById('uploadMediaBox').style.display='none'">Cancelar</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Grid de Fotos -->
+      ${mediaList.length ? `
+        <div class="gallery-grid">
+          ${mediaList.map(renderMediaCard).join('')}
+        </div>
+      ` : `
+        <div style="text-align:center;padding:28px 14px;background:var(--bg-2);border-radius:12px;border:1px dashed var(--line);color:var(--muted)">
+          <p style="margin:0;font-size:0.95rem">Nenhuma foto carregada ainda nesta pasta.</p>
+          <p style="margin:4px 0 0;font-size:0.82rem">Clique em <strong>+ Carregar Novas Fotos</strong> para adicionar marcações e fotos de antes/depois.</p>
+        </div>
+      `}
+    </section>
+  `;
+
+  // ─── Renderização do Prontuário & Evoluções Clínicas ("Infinito" e Editável) ──
+  const evolutionsListHtml = evolutions.length
+    ? evolutions
+        .map((evo) => `
+          <article class="evolution-item" id="evo-${evo.id}">
+            <div class="evolution-header">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="evolution-date">📅 ${escapeHtml(evo.session_date)}</span>
+                ${evo.procedure_name ? `<span class="evolution-procedure">${escapeHtml(evo.procedure_name)}</span>` : ''}
+              </div>
+              <div class="evolution-actions">
+                <button type="button" class="btn tiny" onclick="document.getElementById('evo-view-${evo.id}').style.display='none';document.getElementById('evo-edit-${evo.id}').style.display='block'">
+                  ✏️ Editar
+                </button>
+                <form method="post" action="/admin/patients/${patient.id}/evolutions/${evo.id}/delete" onsubmit="return confirm('Excluir esta anotação do prontuário?')" style="margin:0">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <button class="btn tiny danger" type="submit">🗑️</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- Visualização da Evolução -->
+            <div class="evolution-body" id="evo-view-${evo.id}">
+              ${escapeHtml(evo.notes)}
+            </div>
+
+            <!-- Modo de Edição da Evolução -->
+            <div id="evo-edit-${evo.id}" style="display:none;margin-top:10px">
+              <form method="post" action="/admin/patients/${patient.id}/evolutions/${evo.id}/edit">
+                <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                <div style="display:grid;grid-template-columns:180px 1fr;gap:10px;margin-bottom:8px">
+                  <input type="date" name="session_date" value="${escapeHtml(evo.session_date)}" required style="padding:6px 10px;border-radius:8px;border:1px solid var(--line)">
+                  <input type="text" name="procedure_name" value="${escapeHtml(evo.procedure_name || '')}" placeholder="Procedimento / Título" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line)">
+                </div>
+                <textarea name="notes" rows="4" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);font-family:inherit;font-size:0.92rem;margin-bottom:8px" required>${escapeHtml(evo.notes)}</textarea>
+                <div style="display:flex;gap:6px">
+                  <button class="btn tiny primary" type="submit">Salvar Alterações</button>
+                  <button class="btn tiny ghost" type="button" onclick="document.getElementById('evo-view-${evo.id}').style.display='block';document.getElementById('evo-edit-${evo.id}').style.display='none'">Cancelar</button>
+                </div>
+              </form>
+            </div>
+          </article>
+        `)
+        .join('')
+    : '<p class="muted" style="padding:14px 0">Nenhum registro de atendimento cadastrado ainda.</p>';
+
+  const evolutionsSectionHtml = `
+    <section class="panel" id="evolucoes">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <h2 style="margin:0">Prontuário & Evoluções Clínicas</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+            Histórico contínuo e evolutivo da paciente. Cada consulta pode ser salva e reeditada a qualquer momento.
+          </p>
+        </div>
+        <span class="badge" style="background:#f3ece5;color:var(--text)">${evolutions.length} atendimentos registrados</span>
+      </div>
+
+      <!-- Linha do tempo de atendimentos passados -->
+      <div class="evolution-timeline">
+        ${evolutionsListHtml}
+      </div>
+
+      <!-- Novo Registro de Consulta (Campo Contínuo / Infinito) -->
+      <div class="new-evolution-box">
+        <h3>➕ Novo Registro de Atendimento / Consulta</h3>
+        <form method="post" action="/admin/patients/${patient.id}/evolutions">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <div style="display:grid;grid-template-columns:180px 1fr;gap:12px;margin-bottom:10px">
+            <label class="field" style="margin:0">
+              <span>Data da Sessão *</span>
+              <input type="date" name="session_date" value="${new Date().toISOString().slice(0, 10)}" required>
+            </label>
+            <label class="field" style="margin:0">
+              <span>Procedimento Realizado / Título</span>
+              <input type="text" name="procedure_name" placeholder="Ex.: Aplicação Botox 50U · Retorno 15 dias · Limpeza de pele">
+            </label>
+          </div>
+          <label class="field">
+            <span>Anotações Clínicas & Evolução do Atendimento *</span>
+            <textarea name="notes" rows="4" placeholder="Descreva os produtos e doses utilizadas, áreas aplicadas, lote dos insumos, anestésico, reação da paciente, orientações pós-procedimento e próximos passos..." required></textarea>
+          </label>
+          <div style="display:flex;justify-content:flex-end">
+            <button class="btn primary" type="submit">💾 Salvar Registro no Prontuário</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  `;
+
+  // ─── Renderização dos Termos de Consentimento (TCLE) ─────
+  const consentCardsHtml = consents.length
+    ? consents
+        .map((c) => {
+          const isSigned = c.status === 'signed';
+          const termUrl = `${BASE_URL}/termo/${c.token}`;
+          const msg = `Olá ${patient.full_name}! Por favor, acesse o link a seguir para ler e assinar digitalmente seu Termo de Consentimento para ${c.procedure_name}: ${termUrl}`;
+          const waLink = toWhatsAppLink(patient.phone, msg);
+
+          return `
+            <div class="consent-card">
+              <div class="consent-card-header">
+                <div>
+                  <h4 class="consent-card-title">${escapeHtml(c.procedure_name)}</h4>
+                  <div class="consent-card-meta">
+                    Criado em: ${escapeHtml(formatDateTime(c.created_at))}
+                  </div>
+                </div>
+                ${isSigned
+                  ? `<span class="badge signed">✅ Assinado</span>`
+                  : `<span class="badge pending">⏳ Aguardando</span>`
+                }
+              </div>
+
+              <div>
+                ${isSigned ? `
+                  <p style="margin:0 0 6px;font-size:0.82rem;color:#065f46">
+                    Assinado por <strong>${escapeHtml(c.signed_name || patient.full_name)}</strong><br>
+                    em ${escapeHtml(formatDateTime(c.signed_at))}${c.client_ip ? ` · IP: ${escapeHtml(c.client_ip)}` : ''}
+                  </p>
+                  ${c.signature_data ? `
+                    <div style="background:#fff;border:1px solid #e0d7ce;border-radius:8px;padding:6px;max-width:240px">
+                      <img src="${escapeHtml(c.signature_data)}" alt="Assinatura" style="max-width:100%;height:auto;display:block">
+                    </div>
+                  ` : ''}
+                ` : `
+                  <p style="margin:0 0 8px;font-size:0.82rem;color:var(--muted)">
+                    Aguardando a paciente assinar na tela do celular.
+                  </p>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <input type="text" readonly value="${escapeHtml(termUrl)}" id="termInput-${c.id}" style="padding:4px 8px;width:180px;font-size:0.75rem;border-radius:6px;border:1px solid var(--line);background:#fff">
+                    <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('termInput-${c.id}').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar',2000)">Copiar</button>
+                    ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 WhatsApp</a>` : ''}
+                  </div>
+                `}
+              </div>
+
+              <div class="consent-card-actions">
+                <a class="btn tiny gold" href="/admin/consents/${c.id}" target="_blank" rel="noopener">
+                  📄 Visualizar / Imprimir
+                </a>
+                <form method="post" action="/admin/patients/${patient.id}/consents/${c.id}/delete" onsubmit="return confirm('Deseja excluir este termo?')" style="margin:0">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <button class="btn tiny danger" type="submit">Excluir</button>
+                </form>
+              </div>
+            </div>
+          `;
+        })
+        .join('')
+    : '<p class="muted" style="padding:10px 0">Nenhum termo emitido para esta paciente ainda.</p>';
+
+  const consentSectionHtml = `
+    <section class="panel" id="termos">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <h2 style="margin:0">Termos de Consentimento (TCLE)</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+            Emita o termo correspondente a cada procedimento para a paciente assinar digitalmente no celular.
+          </p>
+        </div>
+      </div>
+
+      <!-- Botões de Emissão Rápida por Procedimento -->
+      <div style="background:var(--bg-2);padding:14px;border-radius:14px;border:1px solid var(--line);margin-bottom:16px">
+        <p style="margin:0 0 10px;font-weight:700;font-size:0.86rem;color:var(--text);text-transform:uppercase;letter-spacing:0.06em">
+          ✍️ Emitir Novo Termo de Consentimento para ${escapeHtml(patient.full_name)}:
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${consentTemplatesList.map((tpl) => `
+            <form method="post" action="/admin/patients/${patient.id}/consents" style="margin:0">
+              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+              <input type="hidden" name="templateId" value="${tpl.id}">
+              <input type="hidden" name="procedureName" value="${escapeHtml(tpl.procedure_name)}">
+              <button class="btn tiny" type="submit" title="Emitir termo de ${escapeHtml(tpl.procedure_name)}">
+                + ${escapeHtml(tpl.procedure_name.split('(')[0].replace('Aplicação de ', '').replace('Preenchimento Dérmico com ', ''))}
+              </button>
+            </form>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="consent-cards-grid">
+        ${consentCardsHtml}
+      </div>
+    </section>
+  `;
+
+  // ─── Renderização da Calculadora de Custos & Lucro Líquido ─
+  const financialRowsHtml = financials.length
+    ? financials.map((f) => `
+        <tr>
+          <td>${escapeHtml(formatDateTime(f.created_at))}</td>
+          <td><strong>${escapeHtml(f.description)}</strong></td>
+          <td>R$ ${escapeHtml(formatBRL(f.gross_value))}</td>
+          <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(f.materials_cost))}</td>
+          <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(f.tax_amount + f.card_fee_amount))}</td>
+          <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(f.clinic_split_amount))}</td>
+          <td style="color:#15803d;font-weight:700">R$ ${escapeHtml(formatBRL(f.net_profit))}</td>
+          <td>
+            <form method="post" action="/admin/patients/${patient.id}/financial/${f.id}/delete" onsubmit="return confirm('Excluir este registro financeiro?')" style="margin:0">
+              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+              <button class="btn tiny danger" type="submit">Excluir</button>
+            </form>
+          </td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="8" class="muted">Nenhum cálculo registrado para esta paciente ainda.</td></tr>';
+
+  const financialSectionHtml = `
+    <section class="panel" id="financeiro">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div>
+          <h2 style="margin:0">Custos, Repasses & Lucro Líquido do Procedimento</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+            Informe o valor cobrado e selecione os materiais utilizados para calcular em tempo real os repasses e o lucro líquido da Fran.
+          </p>
+        </div>
+      </div>
+
+      <!-- Calculadora Interativa -->
+      <div class="calc-container">
+        <div class="calc-inputs-card">
+          <form method="post" action="/admin/patients/${patient.id}/financial" id="calcForm">
+            <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+            <input type="hidden" name="materials_json" id="calcMaterialsJson" value="[]">
+            <input type="hidden" name="tax_amount" id="calcTaxAmount" value="0">
+            <input type="hidden" name="card_fee_amount" id="calcCardFeeAmount" value="0">
+            <input type="hidden" name="clinic_split_amount" id="calcClinicSplitAmount" value="0">
+            <input type="hidden" name="net_profit" id="calcNetProfitHidden" value="0">
+
+            <label class="field">
+              <span>Procedimento Realizado *</span>
+              <input type="text" name="description" id="calcDescription" placeholder="Ex.: Toxina Botulínica 50U + Preenchimento Labial" required>
+            </label>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label class="field">
+                <span>Valor Cobrado da Paciente (R$) *</span>
+                <input type="number" step="0.01" min="0" name="gross_value" id="calcGrossValue" placeholder="1200,00" required oninput="recalcProfit()">
+              </label>
+              <label class="field">
+                <span>Custo Extra de Materiais (R$)</span>
+                <input type="number" step="0.01" min="0" name="extra_materials" id="calcExtraMaterials" placeholder="0,00" oninput="recalcProfit()">
+              </label>
+            </div>
+
+            <!-- Seleção de Materiais do Catálogo -->
+            <label class="field">
+              <span>Insumos e Materiais Utilizados</span>
+              <div class="materials-picker-grid">
+                ${materials.map((m) => `
+                  <div class="material-item-check">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                      <input type="checkbox" class="mat-checkbox" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" onchange="recalcProfit()">
+                      <span>${escapeHtml(m.name)} <strong style="color:var(--accent);font-size:0.75rem">(R$ ${escapeHtml(formatBRL(m.cost_per_unit))})</strong></span>
+                    </label>
+                    <input type="number" min="1" value="1" class="mat-qty" data-id="${m.id}" oninput="recalcProfit()" style="width:44px" title="Quantidade">
+                  </div>
+                `).join('')}
+              </div>
+            </label>
+
+            <!-- Taxas configuradas -->
+            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-top:10px">
+              <label class="field">
+                <span>Imposto (%)</span>
+                <input type="number" step="0.1" name="tax_pct" id="calcTaxPct" value="${clinicSettings.default_tax_pct || 6}" oninput="recalcProfit()">
+              </label>
+              <label class="field">
+                <span>Taxa Cartão (%)</span>
+                <input type="number" step="0.1" name="card_fee_pct" id="calcCardFeePct" value="${clinicSettings.default_card_fee_pct || 3.5}" oninput="recalcProfit()">
+              </label>
+              <label class="field">
+                <span>Repasse Clínica (%)</span>
+                <input type="number" step="0.1" name="clinic_split_pct" id="calcClinicSplitPct" value="${clinicSettings.default_clinic_split_pct || 30}" oninput="recalcProfit()">
+              </label>
+            </div>
+
+            <div style="margin-top:14px">
+              <button class="btn primary" type="submit">💾 Salvar Registro Financeiro deste Atendimento</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Recibo em Tempo Real -->
+        <div class="calc-receipt-card">
+          <h3 class="calc-receipt-title">Extrato de Rentabilidade</h3>
+
+          <div class="receipt-row">
+            <span>Faturamento Bruto</span>
+            <strong id="liveGross">R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Custo Total de Insumos</span>
+            <strong id="liveMaterials">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Imposto (<span id="liveTaxPct">6</span>%)</span>
+            <strong id="liveTax">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Taxa de Cartão (<span id="liveCardPct">3.5</span>%)</span>
+            <strong id="liveCardFee">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Repasse da Clínica (<span id="liveClinicPct">30</span>%)</span>
+            <strong id="liveClinicSplit">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-total-profit">
+            <span>LUCRO LÍQUIDO FRAN</span>
+            <span class="profit-badge" id="liveNetProfit">R$ 0,00</span>
+          </div>
+
+          <p class="muted" style="font-size:0.75rem;margin-top:12px;text-align:center">
+            * O cálculo de repasse da clínica aplica a porcentagem sobre o valor bruto do procedimento.
+          </p>
+        </div>
+      </div>
+
+      <!-- Tabela de Histórico Financeiro da Paciente -->
+      <div style="margin-top:24px">
+        <h3 style="margin:0 0 10px;font-size:1.05rem">Histórico de procedimentos realizados para esta paciente</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Procedimento</th>
+                <th>Valor Bruto</th>
+                <th>Insumos</th>
+                <th>Impostos + Cartão</th>
+                <th>Repasse Clínica</th>
+                <th>Lucro Líquido</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${financialRowsHtml}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+
+  // ─── Renderização das Consultas da Agenda & IA ───────────
   const appointmentsRows = appointments
     .map(
-      (appointment) => `
+      (appt) => `
         <tr>
-          <td>${escapeHtml(formatDateTime(appointment.start_at))}</td>
-          <td>${escapeHtml(appointment.title)}</td>
-          <td>${escapeHtml(statusLabel[appointment.status] || appointment.status)}</td>
-          <td>${appointment.value != null ? `R$ ${escapeHtml(formatBRL(appointment.value))}` : '<span class="muted">—</span>'}</td>
-          <td>${escapeHtml(appointment.notes || '-')}</td>
+          <td>${escapeHtml(formatDateTime(appt.start_at))}</td>
+          <td>${escapeHtml(appt.title)}</td>
+          <td>${appt.value != null ? `R$ ${escapeHtml(formatBRL(appt.value))}` : '<span class="muted">—</span>'}</td>
+          <td>${escapeHtml(appt.notes || '-')}</td>
           <td>
-            ${appointment.status !== 'cancelled' ? `
-            <form method="post" action="/admin/agenda/${appointment.id}/status" style="display:inline">
+            ${appt.status !== 'cancelled' ? `
+            <form method="post" action="/admin/agenda/${appt.id}/status" style="display:inline">
               <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
               <input type="hidden" name="returnPatient" value="${patient.id}">
-              ${appointment.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed">Confirmar</button>` : ''}
+              ${appt.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed">Confirmar</button>` : ''}
               <button class="btn tiny danger" name="status" value="cancelled">Cancelar</button>
-            </form>` : '<span class="muted">—</span>'}
+            </form>` : '<span class="muted">Cancelada</span>'}
           </td>
         </tr>
       `
     )
     .join('');
 
-  // HTML das mensagens da IA agrupadas por caso
-  const aiMessagesHtml = (() => {
-    if (!aiMessages.length) return '<p class="muted">Nenhuma análise gerada ainda.</p>';
-
-    // Agrupa por submission_id
-    const groups = new Map();
-    for (const msg of aiMessages) {
-      const key = msg.submission_id || 'geral';
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(msg);
-    }
-
-    return [...groups.entries()].map(([subId, msgs]) => {
-      const caseLabel = subId === 'geral' ? 'Conversa geral' : `Caso #${subId}`;
-      const chatLink = subId === 'geral'
-        ? `/admin/chat?patientId=${patient.id}`
-        : `/admin/chat?submissionId=${subId}&patientId=${patient.id}`;
-
-      const bubbles = msgs.map((msg) => {
-        const isAi = msg.role === 'assistant';
-        // Quebra linhas para HTML
-        const contentHtml = escapeHtml(msg.content).replace(/\n/g, '<br>');
-        return `
-          <div class="ai-bubble ${isAi ? 'ai-bubble--ai' : 'ai-bubble--user'}">
-            <span class="ai-bubble-label">${isAi ? '🤖 IA' : '👩‍⚕️ Fran'}</span>
-            <div class="ai-bubble-text">${contentHtml}</div>
-            <span class="ai-bubble-time">${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
-          </div>`;
-      }).join('');
-
-      return `
-        <div class="ai-case-group">
-          <div class="ai-case-header">
-            <strong>${caseLabel}</strong>
-            <a class="btn tiny" href="${chatLink}">Continuar conversa →</a>
-          </div>
-          <div class="ai-bubbles">${bubbles}</div>
-        </div>`;
-    }).join('');
-  })();
-
-  const body = `
-    <header class="panel header-panel">
-      <div>
-        <p class="eyebrow">Prontuário da paciente</p>
-        <h1><span class="patient-code">${escapeHtml(toCodeNumber(patient.patient_code))}</span> ${escapeHtml(patient.full_name)}</h1>
-        <p class="muted">${escapeHtml(patient.email || '-')} · ${escapeHtml(patient.phone || '-')}</p>
+  const appointmentsSectionHtml = `
+    <section class="panel" id="agenda">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Consultas Agendadas</h2>
+        <a class="btn tiny primary" href="/admin/agenda">+ Marcar Consulta na Agenda</a>
       </div>
-      <div class="header-actions">
-        <a class="btn" href="/admin/patients">Todas as pacientes</a>
-        <a class="btn" href="/admin/agenda">Agenda</a>
-        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Conversar com IA sobre esta paciente</a>
-      </div>
-    </header>
-
-    ${renderAlert(req.query.saved ? 'Observações salvas com sucesso!' : null, 'success')}
-
-    <section class="panel">
-      <h2>Histórico de questionários</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Questionário</th>
-              <th>Data</th>
-              <th>Queixa principal</th>
-              <th>Expectativa</th>
-              <th>Ação</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${submissionsRows || '<tr><td colspan="5" class="muted">Ainda não há questionários para esta paciente.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Consultas na agenda</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Data/Hora</th>
               <th>Título</th>
-              <th>Status</th>
               <th>Valor</th>
               <th>Observações</th>
               <th>Ação</th>
             </tr>
           </thead>
           <tbody>
-            ${appointmentsRows || '<tr><td colspan="6" class="muted">Nenhuma consulta marcada.</td></tr>'}
+            ${appointmentsRows || '<tr><td colspan="5" class="muted">Nenhuma consulta marcada para esta paciente.</td></tr>'}
           </tbody>
         </table>
       </div>
     </section>
+  `;
 
-    <section class="panel">
-      <h2>Observações clínicas</h2>
-      <form class="patient-notes-form" method="post" action="/admin/patients/${patient.id}/notes">
-        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-        <textarea name="notes" placeholder="Anotações livres sobre a paciente: evolução, protocolos, observações da consulta…">${escapeHtml(patient.notes || '')}</textarea>
-        <div>
-          <button class="btn primary" type="submit">Salvar observações</button>
+  const aiMessagesHtml = (() => {
+    if (!aiMessages.length) return '<p class="muted">Nenhuma conversa ou análise clínica gerada ainda.</p>';
+    return aiMessages.map((msg) => {
+      const isAi = msg.role === 'assistant';
+      const contentHtml = escapeHtml(msg.content).replace(/\n/g, '<br>');
+      return `
+        <div class="ai-bubble ${isAi ? 'ai-bubble--ai' : 'ai-bubble--user'}">
+          <span class="ai-bubble-label">${isAi ? '🤖 IA Clínica' : '👩‍⚕️ Fran'}</span>
+          <div class="ai-bubble-text">${contentHtml}</div>
+          <span class="ai-bubble-time">${escapeHtml(new Date(msg.created_at).toLocaleString('pt-BR'))}</span>
         </div>
-      </form>
-    </section>
+      `;
+    }).join('');
+  })();
 
-    <section class="panel">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-        <h2 style="margin:0">Análise da IA</h2>
-        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Abrir chat completo →</a>
+  const aiSectionHtml = `
+    <section class="panel" id="ia">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h2 style="margin:0">Análise da IA & Suporte Clínico</h2>
+        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">Abrir Chat com IA sobre esta paciente →</a>
       </div>
       <div class="ai-messages-wrap">
         ${aiMessagesHtml}
@@ -1526,28 +2510,412 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     </section>
   `;
 
-  res.send(layout({ title: `Prontuário ${patient.full_name}`, body, userEmail: req.session.adminEmail }));
+  // WhatsApp direto para a paciente
+  const patientWaLink = toWhatsAppLink(patient.phone, `Olá ${patient.full_name}!`);
+
+  const body = `
+    <!-- Top Hero da Pasta da Paciente -->
+    <header class="patient-folder-hero">
+      <div class="patient-folder-meta">
+        <div class="patient-avatar-code">
+          ${escapeHtml(toCodeNumber(patient.patient_code))}
+        </div>
+        <div>
+          <p class="eyebrow" style="margin:0 0 4px">Pasta da Paciente</p>
+          <h1 class="patient-folder-title">${escapeHtml(patient.full_name)}</h1>
+          <div class="patient-contact-line">
+            ${patient.phone ? `
+              <span>📱 Telefone/Whats: <strong>${escapeHtml(patient.phone)}</strong></span>
+            ` : ''}
+            ${patient.email ? `
+              <span>✉️ E-mail: <strong>${escapeHtml(patient.email)}</strong></span>
+            ` : ''}
+            <span>🗓️ Cadastro: ${escapeHtml(new Date(patient.created_at).toLocaleDateString('pt-BR'))}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="quick-actions-bar">
+        ${patientWaLink ? `
+          <a class="btn whatsapp" href="${escapeHtml(patientWaLink)}" target="_blank" rel="noopener">
+            📲 WhatsApp
+          </a>
+        ` : ''}
+        <a class="btn" href="#anamnese">📋 Anamnese</a>
+        <a class="btn" href="#galeria">📸 Galeria</a>
+        <a class="btn" href="#evolucoes">📝 Prontuário</a>
+        <a class="btn" href="#termos">✍️ Termos</a>
+        <a class="btn" href="#financeiro">💰 Financeiro</a>
+        <a class="btn primary" href="/admin/chat?patientId=${patient.id}">🤖 Chat IA</a>
+      </div>
+    </header>
+
+    <!-- Alertas de Sucesso/Erro -->
+    ${renderAlert(req.query.saved_evolution ? 'Evolução clínica salva no prontuário com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.updated_evolution ? 'Evolução clínica atualizada com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.deleted_evolution ? 'Evolução clínica removida.' : null, 'info')}
+    ${renderAlert(req.query.uploaded_media ? 'Fotos salvas na galeria clínica com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.deleted_media ? 'Foto removida da galeria.' : null, 'info')}
+    ${renderAlert(req.query.issued_consent ? 'Termo de consentimento emitido! Envie o link para a paciente assinar no celular.' : null, 'success')}
+    ${renderAlert(req.query.deleted_consent ? 'Termo de consentimento removido.' : null, 'info')}
+    ${renderAlert(req.query.saved_financial ? 'Registro financeiro do procedimento salvo com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.deleted_financial ? 'Registro financeiro removido.' : null, 'info')}
+    ${renderAlert(req.query.new_link ? 'Novo link de anamnese gerado com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.error || null, 'error')}
+
+    <!-- 1. Ficha de Anamnese (Topo) -->
+    ${anamneseSectionHtml}
+
+    <!-- 2. Galeria Clínica: Marcações, Antes & Depois (Meio) -->
+    ${galleryHtml}
+
+    <!-- 3. Prontuário & Evoluções Clínicas ("Infinito" e Editável) -->
+    ${evolutionsSectionHtml}
+
+    <!-- 4. Termos de Consentimento por Procedimento -->
+    ${consentSectionHtml}
+
+    <!-- 5. Tabela e Calculadora Financeira de Rentabilidade -->
+    ${financialSectionHtml}
+
+    <!-- 6. Agenda & IA -->
+    ${appointmentsSectionHtml}
+    ${aiSectionHtml}
+
+    <!-- Lightbox Modal para Visualização de Imagens -->
+    <div class="lightbox-backdrop" id="lightboxModal" onclick="closeLightbox()">
+      <div class="lightbox-content" onclick="event.stopPropagation()">
+        <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+        <img id="lightboxImg" src="" alt="Imagem ampliada">
+      </div>
+    </div>
+
+    <!-- Script da Calculadora Financeira e Lightbox -->
+    <script>
+      function openLightbox(url) {
+        document.getElementById('lightboxImg').src = url;
+        document.getElementById('lightboxModal').classList.add('active');
+      }
+      function closeLightbox() {
+        document.getElementById('lightboxModal').classList.remove('active');
+      }
+
+      function formatMoney(val) {
+        return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      function recalcProfit() {
+        const gross = parseFloat(document.getElementById('calcGrossValue').value) || 0;
+        const extraMat = parseFloat(document.getElementById('calcExtraMaterials').value) || 0;
+        const taxPct = parseFloat(document.getElementById('calcTaxPct').value) || 0;
+        const cardPct = parseFloat(document.getElementById('calcCardFeePct').value) || 0;
+        const clinicPct = parseFloat(document.getElementById('calcClinicSplitPct').value) || 0;
+
+        // Soma materiais selecionados
+        let catalogMatCost = 0;
+        const selectedMaterials = [];
+        document.querySelectorAll('.mat-checkbox:checked').forEach(cb => {
+          const id = cb.dataset.id;
+          const cost = parseFloat(cb.dataset.cost) || 0;
+          const name = cb.dataset.name;
+          const qtyInput = document.querySelector('.mat-qty[data-id="' + id + '"]');
+          const qty = qtyInput ? (parseInt(qtyInput.value) || 1) : 1;
+          const totalItemCost = cost * qty;
+          catalogMatCost += totalItemCost;
+          selectedMaterials.push({ id, name, cost, qty, total: totalItemCost });
+        });
+
+        const totalMaterials = catalogMatCost + extraMat;
+        const taxAmount = (gross * taxPct) / 100;
+        const cardFeeAmount = (gross * cardPct) / 100;
+        const clinicSplitAmount = (gross * clinicPct) / 100;
+        const netProfit = Math.max(0, gross - totalMaterials - taxAmount - cardFeeAmount - clinicSplitAmount);
+
+        // Atualiza campos ocultos do form
+        document.getElementById('calcMaterialsJson').value = JSON.stringify(selectedMaterials);
+        document.getElementById('calcTaxAmount').value = taxAmount.toFixed(2);
+        document.getElementById('calcCardFeeAmount').value = cardFeeAmount.toFixed(2);
+        document.getElementById('calcClinicSplitAmount').value = clinicSplitAmount.toFixed(2);
+        document.getElementById('calcNetProfitHidden').value = netProfit.toFixed(2);
+
+        // Atualiza extrato visual
+        document.getElementById('liveGross').textContent = 'R$ ' + formatMoney(gross);
+        document.getElementById('liveMaterials').textContent = '- R$ ' + formatMoney(totalMaterials);
+        document.getElementById('liveTax').textContent = '- R$ ' + formatMoney(taxAmount);
+        document.getElementById('liveTaxPct').textContent = taxPct;
+        document.getElementById('liveCardFee').textContent = '- R$ ' + formatMoney(cardFeeAmount);
+        document.getElementById('liveCardPct').textContent = cardPct;
+        document.getElementById('liveClinicSplit').textContent = '- R$ ' + formatMoney(clinicSplitAmount);
+        document.getElementById('liveClinicPct').textContent = clinicPct;
+        document.getElementById('liveNetProfit').textContent = 'R$ ' + formatMoney(netProfit);
+      }
+
+      // Inicializa cálculo
+      window.addEventListener('DOMContentLoaded', recalcProfit);
+    </script>
+  `;
+
+  res.send(layout({ title: `Pasta ${patient.full_name}`, body, userEmail: req.session.adminEmail, activeNav: 'patients' }));
 });
 
-// ─── Salvar observações clínicas da paciente ───────────────
-app.post('/admin/patients/:id/notes', requireAuth, (req, res) => {
-  if (!verifyCsrf(req)) {
-    res.status(403).send('CSRF inválido.');
-    return;
-  }
-
+// ─── ROTAS DO PRONTUÁRIO & EVOLUÇÕES ────────────────────────
+app.post('/admin/patients/:id/evolutions', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.params.id);
+  const sessionDate = String(req.body.session_date || '').trim() || new Date().toISOString().slice(0, 10);
+  const procedureName = String(req.body.procedure_name || '').trim() || null;
   const notes = String(req.body.notes || '').trim();
 
-  const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
-  if (!patient) {
-    res.status(404).send('Paciente não encontrada.');
+  if (!notes) {
+    res.redirect(`/admin/patients/${patientId}?error=${encodeURIComponent('Preencha a anotação da consulta.')}#evolucoes`);
     return;
   }
 
-  db.prepare('UPDATE patients SET notes = ?, updated_at = ? WHERE id = ?').run(notes, nowIso(), patientId);
+  db.prepare(`
+    INSERT INTO patient_evolutions (patient_id, procedure_name, session_date, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(patientId, procedureName, sessionDate, notes, nowIso(), nowIso());
 
-  res.redirect(`/admin/patients/${patientId}?saved=1`);
+  res.redirect(`/admin/patients/${patientId}?saved_evolution=1#evolucoes`);
+});
+
+app.post('/admin/patients/:id/evolutions/:evoId/edit', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const evoId = Number(req.params.evoId);
+  const sessionDate = String(req.body.session_date || '').trim();
+  const procedureName = String(req.body.procedure_name || '').trim() || null;
+  const notes = String(req.body.notes || '').trim();
+
+  db.prepare(`
+    UPDATE patient_evolutions
+    SET session_date = ?, procedure_name = ?, notes = ?, updated_at = ?
+    WHERE id = ? AND patient_id = ?
+  `).run(sessionDate, procedureName, notes, nowIso(), evoId, patientId);
+
+  res.redirect(`/admin/patients/${patientId}?updated_evolution=1#evolucoes`);
+});
+
+app.post('/admin/patients/:id/evolutions/:evoId/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const evoId = Number(req.params.evoId);
+
+  db.prepare('DELETE FROM patient_evolutions WHERE id = ? AND patient_id = ?').run(evoId, patientId);
+  res.redirect(`/admin/patients/${patientId}?deleted_evolution=1#evolucoes`);
+});
+
+// ─── ROTAS DA GALERIA DE FOTOS (MARCAÇÕES, ANTES & DEPOIS) ──
+app.post('/admin/patients/:id/media', requireAuth, (req, res) => {
+  upload.array('mediaFiles', 15)(req, res, (err) => {
+    if (err) {
+      res.redirect(`/admin/patients/${req.params.id}?error=${encodeURIComponent(err.message)}#galeria`);
+      return;
+    }
+    if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+
+    const patientId = Number(req.params.id);
+    const category = String(req.body.category || 'geral');
+    const notes = String(req.body.notes || '').trim() || null;
+    const files = req.files || [];
+
+    if (!files.length) {
+      res.redirect(`/admin/patients/${patientId}?error=${encodeURIComponent('Nenhuma foto selecionada.')}#galeria`);
+      return;
+    }
+
+    const insertMedia = db.prepare(`
+      INSERT INTO patient_media (patient_id, category, original_name, stored_name, mime_type, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = db.transaction(() => {
+      for (const file of files) {
+        insertMedia.run(patientId, category, file.originalname, file.filename, file.mimetype, notes, nowIso());
+      }
+    });
+    tx();
+
+    res.redirect(`/admin/patients/${patientId}?uploaded_media=1#galeria`);
+  });
+});
+
+app.get('/admin/media/:id', requireAuth, (req, res) => {
+  const mediaId = Number(req.params.id);
+  const item = db.prepare('SELECT * FROM patient_media WHERE id = ?').get(mediaId);
+  if (!item) { res.status(404).send('Imagem não encontrada.'); return; }
+  const absPath = path.join(uploadDir, item.stored_name);
+  if (!fs.existsSync(absPath)) { res.status(404).send('Arquivo não encontrado no disco.'); return; }
+  if (item.mime_type) res.setHeader('Content-Type', item.mime_type);
+  res.sendFile(absPath);
+});
+
+app.post('/admin/patients/:id/media/:mediaId/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const mediaId = Number(req.params.mediaId);
+  const item = db.prepare('SELECT stored_name FROM patient_media WHERE id = ? AND patient_id = ?').get(mediaId, patientId);
+  if (item) {
+    db.prepare('DELETE FROM patient_media WHERE id = ?').run(mediaId);
+    try { fs.unlinkSync(path.join(uploadDir, item.stored_name)); } catch (_e) {}
+  }
+  res.redirect(`/admin/patients/${patientId}?deleted_media=1#galeria`);
+});
+
+// ─── ROTAS DE TERMOS DE CONSENTIMENTO (TCLE) ────────────────
+app.post('/admin/patients/:id/consents', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const templateId = Number(req.body.templateId || req.body.template_id || 0) || null;
+  let procedureName = String(req.body.procedureName || req.body.procedure_name || '').trim();
+  if (!procedureName && templateId) {
+    const tpl = db.prepare('SELECT procedure_name FROM consent_templates WHERE id = ?').get(templateId);
+    if (tpl) procedureName = tpl.procedure_name;
+  }
+  if (!procedureName) procedureName = 'Procedimento Estético';
+  const token = crypto.randomBytes(18).toString('hex');
+
+  db.prepare(`
+    INSERT INTO patient_consents (patient_id, template_id, token, procedure_name, status, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `).run(patientId, templateId, token, procedureName, nowIso());
+
+  res.redirect(`/admin/patients/${patientId}?issued_consent=${encodeURIComponent(token)}#termos`);
+});
+
+app.post('/admin/patients/:id/consents/:consentId/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const consentId = Number(req.params.consentId);
+  db.prepare('DELETE FROM patient_consents WHERE id = ? AND patient_id = ?').run(consentId, patientId);
+  res.redirect(`/admin/patients/${patientId}?deleted_consent=1#termos`);
+});
+
+// Visualização / Impressão de Termo Assinado
+app.get('/admin/consents/:id', requireAuth, (req, res) => {
+  const consentId = Number(req.params.id);
+  const consent = db.prepare(`
+    SELECT pc.*, p.full_name as patient_name, p.patient_code, p.email, p.phone, ct.content as template_content
+    FROM patient_consents pc
+    JOIN patients p ON p.id = pc.patient_id
+    LEFT JOIN consent_templates ct ON ct.id = pc.template_id
+    WHERE pc.id = ?
+  `).get(consentId);
+
+  if (!consent) { res.status(404).send('Termo não encontrado.'); return; }
+
+  const text = (consent.template_content || '')
+    .replace(/\{\{NOME_PACIENTE\}\}/g, consent.patient_name || 'Paciente')
+    .replace(/\{\{DATA\}\}/g, new Date().toLocaleDateString('pt-BR'));
+
+  const html = `
+    <!doctype html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <title>Termo de Consentimento — ${escapeHtml(consent.procedure_name)}</title>
+      <style>
+        @page { margin: 20mm; }
+        body { font-family: 'Georgia', serif; color: #2c231e; line-height: 1.6; max-width: 780px; margin: 0 auto; padding: 24px; }
+        h1 { font-size: 1.4rem; color: #ad5f42; border-bottom: 2px solid #ad5f42; padding-bottom: 8px; }
+        .meta-box { background: #fdfaf6; border: 1px solid #dfd2c4; border-radius: 8px; padding: 12px; margin-bottom: 18px; font-size: 0.9rem; }
+        .term-body { white-space: pre-wrap; font-size: 0.95rem; margin: 20px 0; }
+        .signature-stamp { margin-top: 30px; border-top: 2px solid #2c231e; padding-top: 14px; display: inline-block; min-width: 320px; }
+        @media print { .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <h1>${escapeHtml(consent.procedure_name)}</h1>
+      <div class="meta-box">
+        <strong>Paciente:</strong> ${escapeHtml(consent.patient_name)} (${escapeHtml(toCodeNumber(consent.patient_code))})<br>
+        <strong>Telefone:</strong> ${escapeHtml(consent.phone || '-')} · <strong>E-mail:</strong> ${escapeHtml(consent.email || '-')}<br>
+        <strong>Status:</strong> ${consent.status === 'signed' ? '✅ Assinado digitalmente' : '⏳ Aguardando assinatura da paciente'}<br>
+        ${consent.signed_at ? `<strong>Data/Hora da Assinatura:</strong> ${escapeHtml(new Date(consent.signed_at).toLocaleString('pt-BR'))} · <strong>IP:</strong> ${escapeHtml(consent.client_ip || '-')}` : ''}
+      </div>
+
+      <div class="term-body">${escapeHtml(text)}</div>
+
+      ${consent.signature_data ? `
+        <div style="margin-top:24px">
+          <div class="signature-stamp">
+            <img src="${escapeHtml(consent.signature_data)}" alt="Assinatura" style="max-height:80px;display:block;margin-bottom:6px">
+            <strong>${escapeHtml(consent.signed_name || consent.patient_name)}</strong><br>
+            <span style="font-size:0.8rem;color:#666">Assinatura Digital Certificada via Plataforma Fran</span>
+          </div>
+        </div>
+      ` : '<p style="color:#92400e;font-style:italic">Termo ainda não assinado pela paciente.</p>'}
+
+      <div class="no-print" style="margin-top:30px;text-align:center">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ad5f42;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer">
+          🖨️ Imprimir / Salvar PDF
+        </button>
+      </div>
+    </body>
+    </html>
+  `;
+  res.send(html);
+});
+
+// ─── ROTAS DO FINANCEIRO & RENTABILIDADE POR PACIENTE ───────
+app.post('/admin/patients/:id/financial', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const description = String(req.body.description || '').trim();
+  const grossValue = parseFloat(req.body.gross_value) || 0;
+  const extraMaterials = parseFloat(req.body.extra_materials) || 0;
+  const taxPct = parseFloat(req.body.tax_pct) || 0;
+  const cardFeePct = parseFloat(req.body.card_fee_pct) || 0;
+  const clinicSplitPct = parseFloat(req.body.clinic_split_pct) || 0;
+
+  const materialsJson = String(req.body.materials_json || '[]');
+  let catalogMatCost = 0;
+  try {
+    const list = JSON.parse(materialsJson);
+    catalogMatCost = list.reduce((sum, item) => sum + (parseFloat(item.total) || 0), 0);
+  } catch (_e) {}
+
+  const materialsCost = catalogMatCost + extraMaterials;
+  const taxAmount = (grossValue * taxPct) / 100;
+  const cardFeeAmount = (grossValue * cardFeePct) / 100;
+  const clinicSplitAmount = (grossValue * clinicSplitPct) / 100;
+  const netProfit = Math.max(0, grossValue - materialsCost - taxAmount - cardFeeAmount - clinicSplitAmount);
+
+  db.prepare(`
+    INSERT INTO procedure_financials (
+      patient_id, description, gross_value, materials_cost, materials_json,
+      tax_pct, tax_amount, card_fee_pct, card_fee_amount,
+      clinic_split_pct, clinic_split_amount, net_profit, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    patientId, description, grossValue, materialsCost, materialsJson,
+    taxPct, taxAmount, cardFeePct, cardFeeAmount,
+    clinicSplitPct, clinicSplitAmount, netProfit, nowIso()
+  );
+
+  res.redirect(`/admin/patients/${patientId}?saved_financial=1#financeiro`);
+});
+
+app.post('/admin/patients/:id/financial/:entryId/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const entryId = Number(req.params.entryId);
+  db.prepare('DELETE FROM procedure_financials WHERE id = ? AND patient_id = ?').run(entryId, patientId);
+  res.redirect(`/admin/patients/${patientId}?deleted_financial=1#financeiro`);
+});
+
+// Gerar novo link de anamnese avulso a partir da pasta da paciente
+app.post('/admin/patients/:id/generate-link', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const patient = db.prepare('SELECT full_name, email FROM patients WHERE id = ?').get(patientId);
+  const token = crypto.randomBytes(18).toString('hex');
+
+  db.prepare(`
+    INSERT INTO patient_links (token, patient_id, patient_name_hint, patient_email_hint, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(token, patientId, patient?.full_name || null, patient?.email || null, nowIso());
+
+  res.redirect(`/admin/patients/${patientId}?new_link=${encodeURIComponent(token)}#anamnese`);
 });
 
 app.get('/admin/agenda', requireAuth, (req, res) => {
@@ -1665,6 +3033,37 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
     )
     .join('');
 
+  let anamneseAlertHtml = '';
+  if (req.query.newAnamneseToken) {
+    const token = String(req.query.newAnamneseToken);
+    const pId = Number(req.query.newPatientId || 0);
+    const pat = pId ? db.prepare('SELECT * FROM patients WHERE id = ?').get(pId) : null;
+    const anamneseUrl = `${BASE_URL}/paciente/${token}`;
+    const pName = pat ? pat.full_name : 'Paciente';
+    const pPhone = pat ? pat.phone : '';
+    const msg = `Olá ${pName}! Confirmamos o seu agendamento. Para prepararmos sua consulta da melhor forma, por favor preencha sua ficha de anamnese neste link: ${anamneseUrl}`;
+    const waLink = toWhatsAppLink(pPhone, msg);
+
+    anamneseAlertHtml = `
+      <div class="panel" style="border:2px solid #25d366;background:#f0fdf4;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+          <div>
+            <h3 style="margin:0 0 6px;color:#15803d;font-size:1.15rem">✅ Consulta agendada com sucesso!</h3>
+            <p style="margin:0 0 10px;font-size:0.92rem;color:#166534">
+              Ficha de Anamnese criada para <strong>${escapeHtml(pName)}</strong>${pPhone ? ` (${escapeHtml(pPhone)})` : ''}.
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
+              <input type="text" readonly value="${escapeHtml(anamneseUrl)}" id="newAnamneseInput" style="padding:7px 12px;width:340px;border-radius:8px;border:1px solid #86efac;background:#fff;font-size:0.85rem">
+              <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('newAnamneseInput').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar link',2000)">Copiar link</button>
+              ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp da Paciente</a>` : ''}
+              ${pat ? `<a class="btn tiny gold" href="/admin/patients/${pat.id}">📂 Abrir Pasta da Paciente</a>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   const body = `
     <header class="panel header-panel">
       <div>
@@ -1677,7 +3076,8 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       </div>
     </header>
 
-    ${renderAlert(req.query.created ? 'Consulta agendada com sucesso.' : null, 'success')}
+    ${anamneseAlertHtml}
+    ${renderAlert(req.query.created && !req.query.newAnamneseToken ? 'Consulta agendada com sucesso.' : null, 'success')}
     ${renderAlert(req.query.error || null, 'error')}
 
     <section class="panel">
@@ -1941,16 +3341,57 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
       <form class="form-stack" method="post" action="/admin/agenda">
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
         <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
-        <label class="field">
-          <span>Paciente <span class="muted" style="font-size:0.82rem">(opcional)</span></span>
-          <select name="patientId">
-            <option value="">— Sem paciente vinculado —</option>
-            ${patientOptions}
-          </select>
+
+        <div class="field">
+          <span>Paciente</span>
+          <div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600">
+              <input type="radio" name="patientSelectionMode" value="existing" checked onchange="document.getElementById('existingPatientWrap').style.display='block';document.getElementById('newPatientWrap').style.display='none'">
+              Paciente já cadastrada
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600;color:var(--accent)">
+              <input type="radio" name="patientSelectionMode" value="new" onchange="document.getElementById('existingPatientWrap').style.display='none';document.getElementById('newPatientWrap').style.display='block'">
+              + Cadastrar nova paciente agora
+            </label>
+          </div>
+        </div>
+
+        <div id="existingPatientWrap">
+          <label class="field">
+            <span>Selecionar Paciente cadastrada</span>
+            <select name="patientId">
+              <option value="">— Sem paciente vinculado —</option>
+              ${patientOptions}
+            </select>
+          </label>
+        </div>
+
+        <div id="newPatientWrap" style="display:none;background:rgba(173,95,66,0.06);padding:16px;border-radius:14px;border:1px solid var(--line);margin:6px 0 12px">
+          <p style="margin:0 0 10px;font-weight:700;font-size:0.92rem;color:var(--accent)">Dados da Nova Paciente</p>
+          <div class="form-grid">
+            <label class="field">
+              <span>Nome Completo *</span>
+              <input type="text" name="newPatientName" placeholder="Ex.: Mariana Souza">
+            </label>
+            <label class="field">
+              <span>WhatsApp / Telefone</span>
+              <input type="tel" name="newPatientPhone" placeholder="(41) 99999-9999">
+            </label>
+            <label class="field">
+              <span>E-mail</span>
+              <input type="email" name="newPatientEmail" placeholder="mariana@email.com">
+            </label>
+          </div>
+        </div>
+
+        <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:4px 0 10px">
+          <input type="checkbox" name="generateAnamnese" value="1" checked>
+          <span><strong>Gerar link da Ficha de Anamnese</strong> (prepara link e mensagem de WhatsApp automaticamente)</span>
         </label>
+
         <label class="field">
-          <span>Título</span>
-          <input type="text" name="title" placeholder="Consulta de retorno" required>
+          <span>Título / Procedimento</span>
+          <input type="text" name="title" placeholder="Ex.: Avaliação + Consulta de retorno" required>
         </label>
         <div class="field">
           <span>Início</span>
@@ -1972,14 +3413,14 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
         </label>
         <label class="field">
           <span>Observações</span>
-          <textarea name="notes" rows="3" placeholder="Ex.: revisar rotina e reação ao retinol"></textarea>
+          <textarea name="notes" rows="3" placeholder="Ex.: interesse em toxina botulínica e preenchimento labial"></textarea>
         </label>
         <button class="btn primary" type="submit">Salvar consulta</button>
       </form>
     </section>
   `;
 
-  res.send(layout({ title: 'Agenda', body, userEmail: req.session.adminEmail }));
+  res.send(layout({ title: 'Agenda', body, userEmail: req.session.adminEmail, activeNav: 'agenda' }));
 });
 
 app.post('/admin/agenda', requireAuth, (req, res) => {
@@ -1988,23 +3429,43 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
     return;
   }
 
-  const resolvedPatientId = Number(req.body.patientId || 0) || null;
+  const isNewPatient = req.body.patientSelectionMode === 'new';
+  let resolvedPatientId = Number(req.body.patientId || 0) || null;
+  const newName = String(req.body.newPatientName || '').trim();
+  const newPhone = String(req.body.newPatientPhone || '').trim();
+  const newEmail = String(req.body.newPatientEmail || '').trim();
+  const generateAnamnese = req.body.generateAnamnese === 'on' || req.body.generateAnamnese === '1';
+
+  const returnMonth = String(req.body.returnMonth || '').trim();
+  const redirectMonth = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
+
+  if (isNewPatient) {
+    if (!newName) {
+      res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Informe o nome da nova paciente.')}`);
+      return;
+    }
+    resolvedPatientId = getOrCreatePatientFromPayload({
+      nomeCompleto: newName,
+      telefone: newPhone,
+      email: newEmail
+    });
+  }
+
   const title = String(req.body.title || '').trim();
   const startAt = combineDateTime(req.body.startDate, req.body.startTime);
   const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
   const notes = String(req.body.notes || '').trim() || null;
   const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
-  const returnMonth = String(req.body.returnMonth || '').trim();
-  const redirectMonth = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
 
   if (!title || !startAt) {
     res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha título e horário de início.')}`);
     return;
   }
 
+  let patient = null;
   if (resolvedPatientId) {
-    const patient = db.prepare('SELECT id FROM patients WHERE id = ?').get(resolvedPatientId);
-    if (!patient) {
+    patient = db.prepare('SELECT id, full_name, phone, email FROM patients WHERE id = ?').get(resolvedPatientId);
+    if (!patient && !isNewPatient) {
       res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Paciente inválida para agendamento.')}`);
       return;
     }
@@ -2017,9 +3478,21 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
     `
   ).run(resolvedPatientId, title, startAt, endAt, notes, value, nowIso());
 
+  let anamneseQuery = '';
+  if (generateAnamnese && resolvedPatientId && patient) {
+    const token = crypto.randomBytes(18).toString('hex');
+    db.prepare(
+      `
+        INSERT INTO patient_links (token, patient_id, patient_name_hint, patient_email_hint, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `
+    ).run(token, resolvedPatientId, patient.full_name, patient.email, nowIso());
+    anamneseQuery = `&newAnamneseToken=${encodeURIComponent(token)}&newPatientId=${resolvedPatientId}`;
+  }
+
   const targetMonth = String(startAt).slice(0, 7);
   const monthToOpen = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : redirectMonth;
-  res.redirect(`/admin/agenda?month=${encodeURIComponent(monthToOpen)}&created=1`);
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(monthToOpen)}&created=1${anamneseQuery}`);
 });
 
 app.get('/admin/submissions/:id', requireAuth, (req, res) => {
@@ -2988,6 +4461,575 @@ app.get('/admin/submissions/:id/print', requireAuth, (req, res) => {
   `;
 
   res.send(html);
+});
+
+// ─── MÓDULO FINANCEIRO & RENTABILIDADE CLÍNICA ─────────────────────────────
+app.get('/admin/financeiro', requireAuth, (req, res) => {
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  const dateFrom = String(req.query.dateFrom || `${currentMonthKey}-01`).slice(0, 10);
+  const dateTo = String(req.query.dateTo || `${currentMonthKey}-${String(lastDay).padStart(2, '0')}`).slice(0, 10);
+
+  const totals = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) AS total_procedures,
+        COALESCE(SUM(gross_value), 0) AS total_gross,
+        COALESCE(SUM(materials_cost), 0) AS total_materials,
+        COALESCE(SUM(tax_amount), 0) AS total_tax,
+        COALESCE(SUM(card_fee_amount), 0) AS total_card_fee,
+        COALESCE(SUM(clinic_split_amount), 0) AS total_clinic_split,
+        COALESCE(SUM(net_profit), 0) AS total_net_profit
+      FROM procedure_financials
+      WHERE date(created_at) BETWEEN ? AND ?
+      `
+    )
+    .get(dateFrom, dateTo);
+
+  const entries = db
+    .prepare(
+      `
+      SELECT pf.*, p.full_name AS patient_name, p.patient_code
+      FROM procedure_financials pf
+      LEFT JOIN patients p ON p.id = pf.patient_id
+      WHERE date(pf.created_at) BETWEEN ? AND ?
+      ORDER BY pf.created_at DESC
+      `
+    )
+    .all(dateFrom, dateTo);
+
+  const patients = db.prepare('SELECT id, patient_code, full_name FROM patients ORDER BY full_name ASC').all();
+  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY name ASC').all();
+  const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
+    default_tax_pct: 6.0,
+    default_card_fee_pct: 3.5,
+    default_clinic_split_pct: 30.0
+  };
+
+  const patientOptions = patients
+    .map((p) => `<option value="${p.id}">${escapeHtml(toCodeNumber(p.patient_code))} - ${escapeHtml(p.full_name)}</option>`)
+    .join('');
+
+  const rows = entries.length
+    ? entries
+        .map(
+          (e) => `
+            <tr>
+              <td>${escapeHtml(formatDateTime(e.created_at))}</td>
+              <td>${e.patient_name ? `<a href="/admin/patients/${e.patient_id}"><strong>${escapeHtml(e.patient_name)}</strong></a>` : '<span class="muted">Avulso</span>'}</td>
+              <td>${escapeHtml(e.description)}</td>
+              <td><strong>R$ ${escapeHtml(formatBRL(e.gross_value))}</strong></td>
+              <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(e.materials_cost))}</td>
+              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.tax_amount + e.card_fee_amount))}</td>
+              <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))}</td>
+              <td style="color:#15803d;font-weight:700;font-size:0.95rem">R$ ${escapeHtml(formatBRL(e.net_profit))}</td>
+              <td>
+                <form method="post" action="/admin/financial/${e.id}/delete" onsubmit="return confirm('Excluir este lançamento financeiro?')" style="margin:0">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="hidden" name="returnUrl" value="/admin/financeiro?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}">
+                  <button class="btn tiny danger" type="submit">Excluir</button>
+                </form>
+              </td>
+            </tr>
+          `
+        )
+        .join('')
+    : '<tr><td colspan="9" class="muted">Nenhum procedimento registrado no período selecionado.</td></tr>';
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Gestão Financeira</p>
+        <h1>Custos, Repasses e Lucro Líquido</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin/materiais">🧪 Gerenciar Insumos & Materiais</a>
+        <a class="btn primary" href="/admin/agenda">📅 Agenda</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.saved ? 'Registro financeiro salvo com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.settings_saved ? 'Alíquotas padrão atualizadas com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.deleted ? 'Registro financeiro excluído.' : null, 'info')}
+
+    <!-- Filtro de Período -->
+    <section class="panel">
+      <form method="get" action="/admin/financeiro" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-weight:700;font-size:0.9rem;color:var(--text)">Filtrar por período:</span>
+        <div class="date-time-pair" style="max-width:320px">
+          <input type="date" name="dateFrom" value="${escapeHtml(dateFrom)}">
+          <input type="date" name="dateTo" value="${escapeHtml(dateTo)}">
+        </div>
+        <button class="btn primary" type="submit">Filtrar</button>
+        <a class="btn ghost" href="/admin/financeiro">Mês Atual</a>
+      </form>
+    </section>
+
+    <!-- Indicadores Principais (KPIs) -->
+    <div class="kpi-row">
+      <article class="kpi-card">
+        <span>Faturamento Bruto</span>
+        <strong>R$ ${escapeHtml(formatBRL(totals.total_gross))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">${totals.total_procedures} atendimentos</span>
+      </article>
+
+      <article class="kpi-card">
+        <span>Custo de Materiais</span>
+        <strong style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(totals.total_materials))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Insumos aplicados</span>
+      </article>
+
+      <article class="kpi-card">
+        <span>Impostos & Cartão</span>
+        <strong style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(totals.total_tax + totals.total_card_fee))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Taxas operacionais</span>
+      </article>
+
+      <article class="kpi-card">
+        <span>Repasse para Clínica</span>
+        <strong style="color:#9a3412">- R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Espaço / Comissão</span>
+      </article>
+
+      <article class="kpi-card highlight">
+        <span>LUCRO LÍQUIDO FRAN</span>
+        <strong>R$ ${escapeHtml(formatBRL(totals.total_net_profit))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Rentabilidade real</span>
+      </article>
+    </div>
+
+    <!-- Calculadora e Novo Lançamento -->
+    <section class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">Novo Registro / Calculadora de Procedimento</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
+            Selecione a paciente, descreva o procedimento e marque os materiais para calcular os repasses e lucro na hora.
+          </p>
+        </div>
+      </div>
+
+      <div class="calc-container">
+        <div class="calc-inputs-card">
+          <form method="post" action="/admin/financeiro/entry" id="mainCalcForm">
+            <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+            <input type="hidden" name="materials_json" id="mainCalcMaterialsJson" value="[]">
+            <input type="hidden" name="tax_amount" id="mainCalcTaxAmount" value="0">
+            <input type="hidden" name="card_fee_amount" id="mainCalcCardFeeAmount" value="0">
+            <input type="hidden" name="clinic_split_amount" id="mainCalcClinicSplitAmount" value="0">
+            <input type="hidden" name="net_profit" id="mainCalcNetProfitHidden" value="0">
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label class="field">
+                <span>Paciente (opcional)</span>
+                <select name="patientId">
+                  <option value="">— Sem paciente vinculado (Avulso) —</option>
+                  ${patientOptions}
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Descrição do Procedimento *</span>
+                <input type="text" name="description" placeholder="Ex.: Toxina Botulínica 50U + Preenchimento Malar" required>
+              </label>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label class="field">
+                <span>Valor Cobrado da Paciente (R$) *</span>
+                <input type="number" step="0.01" min="0" name="gross_value" id="mainCalcGross" placeholder="1500,00" required oninput="recalcMainProfit()">
+              </label>
+              <label class="field">
+                <span>Custo Extra de Materiais (R$)</span>
+                <input type="number" step="0.01" min="0" name="extra_materials" id="mainCalcExtraMat" placeholder="0,00" oninput="recalcMainProfit()">
+              </label>
+            </div>
+
+            <label class="field">
+              <span>Insumos e Materiais Utilizados</span>
+              <div class="materials-picker-grid">
+                ${materials.map((m) => `
+                  <div class="material-item-check">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                      <input type="checkbox" class="main-mat-cb" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" onchange="recalcMainProfit()">
+                      <span>${escapeHtml(m.name)} <strong style="color:var(--accent);font-size:0.75rem">(R$ ${escapeHtml(formatBRL(m.cost_per_unit))})</strong></span>
+                    </label>
+                    <input type="number" min="1" value="1" class="main-mat-qty" data-id="${m.id}" oninput="recalcMainProfit()" style="width:44px" title="Quantidade">
+                  </div>
+                `).join('')}
+              </div>
+            </label>
+
+            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-top:10px">
+              <label class="field">
+                <span>Imposto (%)</span>
+                <input type="number" step="0.1" name="tax_pct" id="mainTaxPct" value="${clinicSettings.default_tax_pct || 6}" oninput="recalcMainProfit()">
+              </label>
+              <label class="field">
+                <span>Taxa Cartão (%)</span>
+                <input type="number" step="0.1" name="card_fee_pct" id="mainCardPct" value="${clinicSettings.default_card_fee_pct || 3.5}" oninput="recalcMainProfit()">
+              </label>
+              <label class="field">
+                <span>Repasse Clínica (%)</span>
+                <input type="number" step="0.1" name="clinic_split_pct" id="mainClinicPct" value="${clinicSettings.default_clinic_split_pct || 30}" oninput="recalcMainProfit()">
+              </label>
+            </div>
+
+            <div style="margin-top:16px">
+              <button class="btn primary" type="submit">💾 Salvar Lançamento Financeiro</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="calc-receipt-card">
+          <h3 class="calc-receipt-title">Extrato do Atendimento</h3>
+
+          <div class="receipt-row">
+            <span>Faturamento Bruto</span>
+            <strong id="mainLiveGross">R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Insumos / Materiais</span>
+            <strong id="mainLiveMaterials">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Imposto (<span id="mainLiveTaxPct">6</span>%)</span>
+            <strong id="mainLiveTax">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Taxa Cartão (<span id="mainLiveCardPct">3.5</span>%)</span>
+            <strong id="mainLiveCardFee">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-row deduct">
+            <span>(-) Repasse da Clínica (<span id="mainLiveClinicPct">30</span>%)</span>
+            <strong id="mainLiveClinicSplit">- R$ 0,00</strong>
+          </div>
+
+          <div class="receipt-total-profit">
+            <span>LUCRO LÍQUIDO FRAN</span>
+            <span class="profit-badge" id="mainLiveNetProfit">R$ 0,00</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tabela de Lançamentos do Período -->
+    <section class="panel">
+      <h2>Procedimentos Registrados no Período</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Paciente</th>
+              <th>Procedimento</th>
+              <th>Valor Bruto</th>
+              <th>Insumos</th>
+              <th>Impostos + Cartão</th>
+              <th>Repasse Clínica</th>
+              <th>Lucro Líquido</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Configuração de Alíquotas Padrão -->
+    <section class="panel" style="max-width:620px">
+      <h2>Alíquotas e Porcentagens Padrão da Clínica</h2>
+      <p class="muted" style="font-size:0.86rem;margin-top:4px">
+        Valores sugeridos automaticamente ao abrir a calculadora de procedimentos.
+      </p>
+      <form class="form-stack" method="post" action="/admin/financeiro/settings" style="margin-top:14px">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:12px">
+          <label class="field">
+            <span>Imposto Padrão (%)</span>
+            <input type="number" step="0.1" name="default_tax_pct" value="${clinicSettings.default_tax_pct || 6.0}" required>
+          </label>
+          <label class="field">
+            <span>Taxa Cartão Padrão (%)</span>
+            <input type="number" step="0.1" name="default_card_fee_pct" value="${clinicSettings.default_card_fee_pct || 3.5}" required>
+          </label>
+          <label class="field">
+            <span>Repasse Clínica Padrão (%)</span>
+            <input type="number" step="0.1" name="default_clinic_split_pct" value="${clinicSettings.default_clinic_split_pct || 30.0}" required>
+          </label>
+        </div>
+        <button class="btn primary" type="submit">Salvar Alíquotas Padrão</button>
+      </form>
+    </section>
+
+    <script>
+      function formatMoney(val) {
+        return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      function recalcMainProfit() {
+        const gross = parseFloat(document.getElementById('mainCalcGross').value) || 0;
+        const extraMat = parseFloat(document.getElementById('mainCalcExtraMat').value) || 0;
+        const taxPct = parseFloat(document.getElementById('mainTaxPct').value) || 0;
+        const cardPct = parseFloat(document.getElementById('mainCardPct').value) || 0;
+        const clinicPct = parseFloat(document.getElementById('mainClinicPct').value) || 0;
+
+        let catalogMatCost = 0;
+        const selectedMaterials = [];
+        document.querySelectorAll('.main-mat-cb:checked').forEach(cb => {
+          const id = cb.dataset.id;
+          const cost = parseFloat(cb.dataset.cost) || 0;
+          const name = cb.dataset.name;
+          const qtyInput = document.querySelector('.main-mat-qty[data-id="' + id + '"]');
+          const qty = qtyInput ? (parseInt(qtyInput.value) || 1) : 1;
+          const totalItemCost = cost * qty;
+          catalogMatCost += totalItemCost;
+          selectedMaterials.push({ id, name, cost, qty, total: totalItemCost });
+        });
+
+        const totalMaterials = catalogMatCost + extraMat;
+        const taxAmount = (gross * taxPct) / 100;
+        const cardFeeAmount = (gross * cardPct) / 100;
+        const clinicSplitAmount = (gross * clinicPct) / 100;
+        const netProfit = Math.max(0, gross - totalMaterials - taxAmount - cardFeeAmount - clinicSplitAmount);
+
+        document.getElementById('mainCalcMaterialsJson').value = JSON.stringify(selectedMaterials);
+        document.getElementById('mainCalcTaxAmount').value = taxAmount.toFixed(2);
+        document.getElementById('mainCalcCardFeeAmount').value = cardFeeAmount.toFixed(2);
+        document.getElementById('mainCalcClinicSplitAmount').value = clinicSplitAmount.toFixed(2);
+        document.getElementById('mainCalcNetProfitHidden').value = netProfit.toFixed(2);
+
+        document.getElementById('mainLiveGross').textContent = 'R$ ' + formatMoney(gross);
+        document.getElementById('mainLiveMaterials').textContent = '- R$ ' + formatMoney(totalMaterials);
+        document.getElementById('mainLiveTax').textContent = '- R$ ' + formatMoney(taxAmount);
+        document.getElementById('mainLiveTaxPct').textContent = taxPct;
+        document.getElementById('mainLiveCardFee').textContent = '- R$ ' + formatMoney(cardFeeAmount);
+        document.getElementById('mainLiveCardPct').textContent = cardPct;
+        document.getElementById('mainLiveClinicSplit').textContent = '- R$ ' + formatMoney(clinicSplitAmount);
+        document.getElementById('mainLiveClinicPct').textContent = clinicPct;
+        document.getElementById('mainLiveNetProfit').textContent = 'R$ ' + formatMoney(netProfit);
+      }
+
+      window.addEventListener('DOMContentLoaded', recalcMainProfit);
+    </script>
+  `;
+
+  res.send(layout({ title: 'Financeiro & Rentabilidade', body, userEmail: req.session.adminEmail, activeNav: 'financeiro' }));
+});
+
+app.post('/admin/financeiro/entry', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.body.patientId || 0) || null;
+  const description = String(req.body.description || '').trim();
+  const grossValue = parseFloat(req.body.gross_value) || 0;
+  const extraMaterials = parseFloat(req.body.extra_materials) || 0;
+  const taxPct = parseFloat(req.body.tax_pct) || 0;
+  const cardFeePct = parseFloat(req.body.card_fee_pct) || 0;
+  const clinicSplitPct = parseFloat(req.body.clinic_split_pct) || 0;
+
+  const materialsJson = String(req.body.materials_json || '[]');
+  let catalogMatCost = 0;
+  try {
+    const list = JSON.parse(materialsJson);
+    catalogMatCost = list.reduce((sum, item) => sum + (parseFloat(item.total) || 0), 0);
+  } catch (_e) {}
+
+  const materialsCost = catalogMatCost + extraMaterials;
+  const taxAmount = (grossValue * taxPct) / 100;
+  const cardFeeAmount = (grossValue * cardFeePct) / 100;
+  const clinicSplitAmount = (grossValue * clinicSplitPct) / 100;
+  const netProfit = Math.max(0, grossValue - materialsCost - taxAmount - cardFeeAmount - clinicSplitAmount);
+
+  db.prepare(`
+    INSERT INTO procedure_financials (
+      patient_id, description, gross_value, materials_cost, materials_json,
+      tax_pct, tax_amount, card_fee_pct, card_fee_amount,
+      clinic_split_pct, clinic_split_amount, net_profit, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    patientId, description, grossValue, materialsCost, materialsJson,
+    taxPct, taxAmount, cardFeePct, cardFeeAmount,
+    clinicSplitPct, clinicSplitAmount, netProfit, nowIso()
+  );
+
+  res.redirect('/admin/financeiro?saved=1');
+});
+
+app.post('/admin/financial/:id/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM procedure_financials WHERE id = ?').run(id);
+  const returnUrl = req.body.returnUrl || '/admin/financeiro?deleted=1';
+  res.redirect(returnUrl);
+});
+
+app.post('/admin/financeiro/settings', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const taxPct = parseFloat(req.body.default_tax_pct) || 0;
+  const cardPct = parseFloat(req.body.default_card_fee_pct) || 0;
+  const clinicPct = parseFloat(req.body.default_clinic_split_pct) || 0;
+
+  db.prepare(`
+    UPDATE clinic_settings
+    SET default_tax_pct = ?, default_card_fee_pct = ?, default_clinic_split_pct = ?, updated_at = ?
+    WHERE id = 1
+  `).run(taxPct, cardPct, clinicPct, nowIso());
+
+  res.redirect('/admin/financeiro?settings_saved=1');
+});
+
+// ─── GESTÃO DO CATÁLOGO DE INSUMOS & MATERIAIS ─────────────────────────────
+app.get('/admin/materiais', requireAuth, (req, res) => {
+  const materials = db.prepare('SELECT * FROM material_costs ORDER BY is_active DESC, name ASC').all();
+
+  const rows = materials.length
+    ? materials
+        .map(
+          (m) => `
+            <tr>
+              <td><strong>${escapeHtml(m.name)}</strong></td>
+              <td>${escapeHtml(m.unit_type)}</td>
+              <td><strong>R$ ${escapeHtml(formatBRL(m.cost_per_unit))}</strong></td>
+              <td>
+                ${m.is_active ? '<span class="badge signed">Ativo</span>' : '<span class="badge" style="background:#eee;color:#777">Inativo</span>'}
+              </td>
+              <td style="display:flex;gap:6px">
+                <form method="post" action="/admin/materiais/${m.id}/edit" style="display:inline-flex;gap:4px">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="number" step="0.01" name="cost_per_unit" value="${m.cost_per_unit}" style="width:75px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);font-size:0.82rem">
+                  <button class="btn tiny" type="submit">Salvar Preço</button>
+                </form>
+                <form method="post" action="/admin/materiais/${m.id}/toggle" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <button class="btn tiny ghost" type="submit">${m.is_active ? 'Desativar' : 'Ativar'}</button>
+                </form>
+                <form method="post" action="/admin/materiais/${m.id}/delete" onsubmit="return confirm('Excluir este insumo?')" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <button class="btn tiny danger" type="submit">✕</button>
+                </form>
+              </td>
+            </tr>
+          `
+        )
+        .join('')
+    : '<tr><td colspan="5" class="muted">Nenhum insumo cadastrado ainda.</td></tr>';
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Precificação & Insumos</p>
+        <h1>Catálogo de Materiais e Custos</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin/financeiro">💰 Voltar ao Financeiro</a>
+        <a class="btn primary" href="/admin/agenda">📅 Agenda</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.saved ? 'Insumo cadastrado com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.updated ? 'Insumo atualizado com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.deleted ? 'Insumo excluído.' : null, 'info')}
+
+    <!-- Tabela de Materiais -->
+    <section class="panel">
+      <h2>Materiais e Insumos Cadastrados</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Nome do Material / Produto</th>
+              <th>Apresentação / Unidade</th>
+              <th>Custo Unitário (R$)</th>
+              <th>Status</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Formulário para Novo Material -->
+    <section class="panel" style="max-width:580px">
+      <h2>+ Adicionar Novo Insumo ao Catálogo</h2>
+      <form class="form-stack" method="post" action="/admin/materiais" style="margin-top:14px">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <label class="field">
+          <span>Nome do Insumo / Produto *</span>
+          <input type="text" name="name" placeholder="Ex.: Toxina Botulínica 100U (Frasco) · Ácido Hialurônico 1ml" required>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Tipo de Unidade / Apresentação *</span>
+            <input type="text" name="unit_type" placeholder="Ex.: Frasco, Seringa 1ml, Kit, Unidade" required>
+          </label>
+          <label class="field">
+            <span>Custo Unitário (R$) *</span>
+            <input type="number" step="0.01" min="0" name="cost_per_unit" placeholder="420,00" required>
+          </label>
+        </div>
+        <button class="btn primary" type="submit">Cadastrar Insumo</button>
+      </form>
+    </section>
+  `;
+
+  res.send(layout({ title: 'Catálogo de Insumos', body, userEmail: req.session.adminEmail, activeNav: 'materiais' }));
+});
+
+app.post('/admin/materiais', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const name = String(req.body.name || '').trim();
+  const unitType = String(req.body.unit_type || 'Unidade').trim();
+  const cost = parseFloat(req.body.cost_per_unit) || 0;
+
+  if (!name || cost <= 0) {
+    res.redirect('/admin/materiais?error=invalid');
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO material_costs (name, unit_type, cost_per_unit, is_active, created_at)
+    VALUES (?, ?, ?, 1, ?)
+  `).run(name, unitType, cost, nowIso());
+
+  res.redirect('/admin/materiais?saved=1');
+});
+
+app.post('/admin/materiais/:id/edit', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const id = Number(req.params.id);
+  const cost = parseFloat(req.body.cost_per_unit) || 0;
+
+  db.prepare('UPDATE material_costs SET cost_per_unit = ? WHERE id = ?').run(cost, id);
+  res.redirect('/admin/materiais?updated=1');
+});
+
+app.post('/admin/materiais/:id/toggle', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const id = Number(req.params.id);
+  const item = db.prepare('SELECT is_active FROM material_costs WHERE id = ?').get(id);
+  if (item) {
+    db.prepare('UPDATE material_costs SET is_active = ? WHERE id = ?').run(item.is_active ? 0 : 1, id);
+  }
+  res.redirect('/admin/materiais?updated=1');
+});
+
+app.post('/admin/materiais/:id/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM material_costs WHERE id = ?').run(id);
+  res.redirect('/admin/materiais?deleted=1');
 });
 
 // ─── Configurações ─────────────────────────────────────────────────────────
