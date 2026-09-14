@@ -1,188 +1,62 @@
 /**
- * Modelos de Termos de Consentimento Livre e Esclarecido (TCLE)
- * para procedimentos clínicos e estéticos da Plataforma Fran.
+ * Modelos Oficiais de Termos de Consentimento Livre e Esclarecido (TCLE)
+ * Dra. Fransuele Hanel • Biomedicina Estética Avançada & Integrativa • CRBM-5: 015427
  */
 
 const consentTemplates = [
   {
-    slug: 'toxina-botulinica',
-    title: 'Termo de Consentimento — Toxina Botulínica',
-    procedure_name: 'Aplicação de Toxina Botulínica (Botox)',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-APLICAÇÃO DE TOXINA BOTULÍNICA
-
-Eu, {{NOME_PACIENTE}}, declaro que fui devidamente informada(o) pela profissional Fran sobre o procedimento de aplicação de Toxina Botulínica.
-
-1. FINALIDADE DO PROCEDIMENTO:
-A aplicação visa o relaxamento temporário dos músculos faciais responsáveis pelas rugas de expressão (linhas dinâmicas), suavizando marcas em regiões como fronte (testa), glabela (entre as sobrancelhas), perioculares ("pés de galinha") e outras áreas previamente avaliadas.
-
-2. DURAÇÃO E RESULTADOS:
-Compreendo que os resultados começam a ser visíveis entre 48 horas e 15 dias após a aplicação, com duração média estimada de 3 a 5 meses, variando conforme o metabolismo individual, prática intensa de atividades físicas e resposta biológica de cada organismo.
-
-3. POSSÍVEIS EFEITOS E REAÇÕES:
-Fui orientada(o) de que podem ocorrer pequenos edemas (inchaço), eritema (vermelhidão), pequenos hematomas nos locais das picadas, leve dor de cabeça transitória ou assimetrias temporárias que poderão ser corrigidas na consulta de retorno (geralmente entre 15 e 21 dias).
-
-4. CUIDADOS PÓS-PROCEDIMENTO:
-Comprometo-me a seguir todas as orientações pós-aplicação: não deitar ou abaixar a cabeça nas primeiras 4 horas, não massagear ou pressionar as áreas tratadas, não praticar atividades físicas intensas nas primeiras 24 horas e não se expor ao calor intenso (sauna/sol) nos primeiros dias.
-
-5. DECLARAÇÃO E CONSENTIMENTO:
-Declaro que informei com veracidade todo o meu histórico de saúde, uso de medicamentos, alergias e eventual estado de gravidez ou amamentação. Tive a oportunidade de esclarecer todas as dúvidas e concordo voluntariamente com a realização do procedimento.`
+    "slug": "toxina-botulinica",
+    "title": "Termo de Consentimento — Aplicação de Toxina Botulínica Tipo A",
+    "procedure_name": "Toxina Botulínica Tipo A",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • APLICAÇÃO DE TOXINA BOTULÍNICA TIPO A\n\n1. IDENTIFICAÇÃO DAS PARTES\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. RASTREABILIDADE DO PRODUTO\nAplicação de Toxina Botulínica estéril tipo A, reconstituída e dosada conforme plano de aplicação individualizado.\n\n3. INFORMAÇÕES GERAIS E OBJETIVO\nA Toxina Botulínica age bloqueando temporariamente a liberação de acetilcolina na junção neuromuscular, ocasionando o relaxamento da musculatura tratada para atenuação e prevenção de rugas dinâmicas (linhas de expressão em testa, glabela, perioculares e áreas associadas). Os efeitos iniciam-se entre 2 a 6 dias, com pico de ação entre 14 e 21 dias e durabilidade média de 3 a 6 meses. Trata-se de procedimento biológico, sujeito a variações metabólicas individuais.\n\n4. RISCOS, EFEITOS ADVERSOS E COMPLICAÇÕES\n• Comuns / Transitórios: Edema, eritema (vermelhidão), cefaleia transitória, equimose (manchas roxas), sensação de tensão e pequenas assimetrias temporárias que podem ser ajustadas na revisão clínica.\n• Raros: Ptose palpebral ou de supercílio, disfagia, diplopia, ectrópio ou assimetria acentuada por difusão tecidual indesejada.\n\n5. CONTRAINDICAÇÕES E DECLARAÇÃO DE ANTECEDENTES\nO procedimento é contraindicado em gestantes, lactantes, indivíduos com infecção ativa no local da aplicação, alergia aos componentes da fórmula, portadores de doenças neuromusculares (como Miastenia Gravis, Síndrome de Eaton-Lambert) ou uso recente de antibióticos aminoglicosídeos. Declaro que não omiti nenhuma informação sobre meu estado de saúde no questionário de anamnese.\n\n6. CUIDADOS PÓS-PROCEDIMENTO\n• Não deitar ou abaixar a cabeça nas primeiras 4 horas após a aplicação.\n• Não massagear, comprimir ou esfregar vigorosamente a área tratada por 24 horas.\n• Suspender exercícios físicos e fontes de calor excessivo (sauna, banhos muito quentes, exposição solar direta) por 24 a 48 horas.\n• Não ingerir bebidas alcoólicas nas primeiras 24 horas pós-procedimento.\n• Comparecer pontualmente ao retorno clínico estipulado (entre 14 e 21 dias) para avaliação dos resultados e eventuais complementações necessárias.\n\n7. AUTORIZAÇÃO DE USO DE IMAGEM\n( ) Autorizo exclusivamente para prontuário clínico e documentação médica confidencial.\n( ) Autorizo para fins científicos, educacionais e divulgação clínica profissional em redes sociais.\n( ) Não autorizo uso de imagem.\n\n8. CONSENTIMENTO E CIÊNCIA JURÍDICA\nDeclaro ciência de que os tratamentos estéticos configuram obrigação de meio, dependendo de fatores biológicos e metabólicos individuais. Tive a oportunidade de sanar todas as minhas dúvidas e outorgo meu consentimento livre e esclarecido para a realização do procedimento."
   },
   {
-    slug: 'acido-hialuronico',
-    title: 'Termo de Consentimento — Preenchimento com Ácido Hialurônico',
-    procedure_name: 'Preenchimento Dérmico com Ácido Hialurônico',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-PREENCHIMENTO COM ÁCIDO HIALURÔNICO
-
-Eu, {{NOME_PACIENTE}}, declaro que fui devidamente informada(o) sobre o procedimento de preenchimento facial/labial com Ácido Hialurônico.
-
-1. NATUREZA DO PRODUTO E FINALIDADE:
-O ácido hialurônico é um biomaterial estéril e biocompatível, utilizado para volumização, harmonização, estruturação facial, sustentação e hidratação profunda de áreas como lábios, sulcos, malar, mandíbula, queixo ou olheiras.
-
-2. DURAÇÃO DOS EFEITOS:
-O produto é reabsorvível pelo organismo, com durabilidade média variável de 9 a 18 meses dependendo da região tratada, densidade do produto e características individuais.
-
-3. POSSÍVEIS EFEITOS ADVERSOS:
-É comum o surgimento de inchaço, sensibilidade, assimetria temporária decorrente do edema e hematomas nos primeiros 3 a 7 dias. Fui informada(o) sobre os sinais de alerta vascular e a importância de contato imediato caso note dor desproporcional ou alteração de coloração da pele.
-
-4. CUIDADOS PÓS-PROCEDIMENTO:
-Não massagear vigorosamente a região, evitar exposição solar enquanto houver hematomas, não praticar exercícios físicos nas primeiras 24-48 horas e aplicar compressas frias conforme recomendado.
-
-5. DECLARAÇÃO:
-Confirmo ter respondido com verdade todas as perguntas sobre meu estado de saúde e autorizo a realização do procedimento.`
+    "slug": "preenchimento-facial",
+    "title": "Termo de Consentimento — Preenchimento Facial com Ácido Hialurônico",
+    "procedure_name": "Preenchimento Facial com Ácido Hialurônico",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • PREENCHIMENTO FACIAL COM ÁCIDO HIALURÔNICO\n\n1. IDENTIFICAÇÃO DAS PARTES\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. DADOS DO DISPOSITIVO / PRODUTO INJETÁVEL\nÁcido Hialurônico reticulado biocompatível e reabsorvível, aplicado via cânula ou agulha estéril para reestruturação, volumização e harmonização em áreas previamente acordadas (Malar, Mento, Mandíbula, Sulcos nasogenianos, Olheiras, Têmporas, etc.).\n\n3. NATUREZA DO TRATAMENTO\nO ácido hialurônico é um biopolímero reabsorvível e biocompatível utilizado para volumização, reestruturação óssea/profunda e harmonização dos contornos faciais. O resultado imediato apresenta edema; a acomodação tecidual completa ocorre entre 15 a 30 dias. A durabilidade varia de 8 a 18 meses de acordo com a área tratada, plano de injeção e o metabolismo individual.\n\n4. RISCOS, INTERCORRÊNCIAS E COMPLICAÇÕES\n• Reações Esperadas: Inchaço (edema), equimoses/hematomas, dor leve à palpação, endurecimento inicial e assimetrias temporárias decorrentes do inchaço assimétrico.\n• Riscos Severos: Nódulos, granulomas tardios, infecção, isquemia/obstrução vascular por compressão ou embolização com risco de necrose tecidual e, em situações raríssimas na face, acometimento ocular.\n• Protocolo de Reversão: Estou ciente de que pode ser necessária a aplicação de Hialuronidase em casos de assimetria persistente, nódulos ou emergência vascular.\n\n5. CONTRAINDICAÇÕES\nGestação, lactação, processos inflamatórios ou infecciosos ativos no local, histórico de preenchimentos definitivos prévios (como PMMA ou silicone líquido) na mesma área anatômica sem prévia avaliação especializada, ou doenças autoimunes descompensadas.\n\n6. CUIDADOS PÓS-APLICAÇÃO\n• Não massagear ou aplicar pressão vigorosa nas áreas tratadas por 48 horas.\n• Não deitar de bruços ou de lado nas primeiras noites para não deformar o implante recém-posicionado.\n• Evitar maquiagem por 24 horas, bebidas alcoólicas por 24 horas e exposição solar/calor intenso/exercícios extenuantes por 48 horas.\n• Sinal de Alerta / Emergência: Comunicar de imediato alterações térmicas, dor intensa, palidez cutânea súbita ou manchas arroxeadas marmóreas na pele.\n\n7. IMAGEM E TERMOS LEGAIS\n( ) Autorizo imagem para fins clínicos e divulgação em redes sociais profissionais.\n( ) Uso restrito a prontuário clínico confidencial.\n( ) Não autorizo divulgação.\nDeclaro estar ciente de que o resultado final depende da resposta tecidual individual e do cumprimento estrito das diretrizes pós-tratamento, outorgando meu consentimento livre e esclarecido."
   },
   {
-    slug: 'bioestimulador-colageno',
-    title: 'Termo de Consentimento — Bioestimulador de Colágeno',
-    procedure_name: 'Aplicação de Bioestimulador de Colágeno',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-BIOESTIMULADOR DE COLÁGENO (Ácido Poli-L-Láctico / Hidroxiapatita de Cálcio)
-
-Eu, {{NOME_PACIENTE}}, declaro ter sido plenamente informada(o) sobre o tratamento com Bioestimuladores de Colágeno.
-
-1. OBJETIVO DO TRATAMENTO:
-Estimular a produção gradual e natural de novas fibras de colágeno pelo próprio organismo, melhorando a espessura dérmica, firmeza, textura e reduzindo a flacidez tecidual facial ou corporal.
-
-2. EXPECTATIVA DE RESULTADOS:
-Compreendo que a melhora é progressiva, iniciando-se a partir da 4ª semana com pico de resultados entre o 3º e 6º mês. Podem ser necessárias de 1 a 3 sessões para o alcance do objetivo terapêutico desejado.
-
-3. CUIDADOS E MASSAGEM OBRIGATÓRIA:
-Fui orientada(o) sobre a indispensável realização de massagens na área tratada (regra 5x5x5 ou protocolo especificado pela profissional) para evitar a formação de pequenos nódulos ou grumos de produto.
-
-4. REAÇÕES ESPERADAS:
-Edema transitório, discreto desconforto à palpação e eventuais equimoses/hematomas nos locais de entrada das cânulas ou agulhas.
-
-5. CONSENTIMENTO:
-Esclareci todas as minhas dúvidas e autorizo o início do protocolo de bioestímulo de colágeno.`
+    "slug": "preenchimento-labial",
+    "title": "Termo de Consentimento — Preenchimento e Escultura Labial",
+    "procedure_name": "Preenchimento e Escultura Labial",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • PREENCHIMENTO E ESCULTURA LABIAL (ÁCIDO HIALURÔNICO)\n\n1. IDENTIFICAÇÃO DO PACIENTE E PROFISSIONAL\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. CARACTERÍSTICAS E EXPECTATIVAS\nO procedimento atua no contorno, volumização, projeção, hidratação do vermelhão e refinamento do arco do cupido com Ácido Hialurônico reticulado específico para lábios. O lábio é uma região altamente vascularizada e com grande retenção hídrica; o inchaço nos primeiros 3 a 5 dias NÃO reflete o resultado final, que é consolidado após 15 a 20 dias da aplicação.\n\n3. RISCOS E REAÇÕES\n• Efeitos Esperados: Edema acentuado nas primeiras 48-72h, nódulos transitórios palpáveis (acometimento do produto antes da completa acomodação tecidual), dor local, sensibilidade ao toque e hematomas/equimoses.\n• Riscos Potenciais: Reativação de herpes labial simples, infecção secundária, extrusão superficial, compressão vascular ou necrose do vermelhão labial.\n\n4. CONTRAINDICAÇÕES ESPECÍFICAS\nLesões herpéticas ativas, queilite angular, histórico de hipersensibilidade ao ácido hialurônico ou lidocaína, gestantes, lactantes e portadores de substâncias definitivas/permanentes prévias nos lábios (ex.: PMMA, silicone líquido).\n\n5. CUIDADOS PÓS-PROCEDIMENTO\n• Não esfregar, massagear, morder ou realizar pressão mecânica (canudos, beijos, instrumentos de sopro) por 48 horas.\n• Não aplicar maquiagem labial (batom, gloss, lápis labial) por 24 horas.\n• Evitar ingestão de líquidos ou alimentos excessivamente quentes nas primeiras 24 horas.\n• Não praticar exercícios físicos intensos e não consumir bebidas alcoólicas por 48 horas.\n• Aplicar gelo/compressas frias envoltas em gaze conforme orientação para controle do inchaço.\n\n6. TERMOS FINAIS E USO DE IMAGEM\nDeclaro que recebi orientação de uso profilático antiviral (caso possua histórico frequente de herpes labial) e compreendi os limites biológicos de volumização segura por sessão.\n( ) Prontuário clínico confidencial apenas.\n( ) Redes Sociais / Divulgação clínica profissional.\n( ) Não autorizo uso de imagem fora do prontuário."
   },
   {
-    slug: 'peeling-quimico',
-    title: 'Termo de Consentimento — Peeling Químico',
-    procedure_name: 'Peeling Químico Facial',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-PEELING QUÍMICO
-
-Eu, {{NOME_PACIENTE}}, confirmo que recebi todas as orientações sobre a realização do Peeling Químico.
-
-1. OBJETIVO:
-Promover renovação celular programada através da aplicação tópica de ácidos específicos, atuando no tratamento de manchas, melasma, oleosidade, acne ativa, poros dilatados e textura cutânea.
-
-2. REAÇÕES ESPERADAS DURANTE E APÓS A SESSÃO:
-Pode ocorrer sensação de ardência, calor ou pinicação durante a aplicação. Nos dias seguintes (geralmente entre o 2º e o 7º dia), poderá haver descamação, ressecamento, sensação de repuxamento e leve eritema.
-
-3. CUIDADOS OBRIGATÓRIOS:
-- JAMAIS puxar, esfoliar ou arrancar as pelinhas que estiverem descamando.
-- Utilizar protetor solar com FPS alto com reaplicação regular a cada 2 a 3 horas.
-- Não se expor diretamente ao sol, praia, piscina ou saunas durante o período de recuperação.
-- Utilizar apenas os produtos calmantes e regeneradores prescritos pela profissional.
-
-4. AUTORIZAÇÃO:
-Concordo com o plano de aplicação e comprometo-me a seguir estritamente os cuidados de home care indicados.`
+    "slug": "bioestimulador-caha",
+    "title": "Termo de Consentimento — Bioestimulador de Colágeno (CaHA)",
+    "procedure_name": "Bioestimulador CaHA (Hidroxiapatita de Cálcio)",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • BIOESTIMULAÇÃO DE COLÁGENO COM HIDROXIAPATITA DE CÁLCIO (CAHA)\n\n1. DADOS DE IDENTIFICAÇÃO E RASTREABILIDADE\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\nRegião de Aplicação: Face, Pescoço, Colo ou Corporal (Glúteo, Abdômen, Braços).\n\n2. MECANISMO E RESULTADOS\nA Hidroxiapatita de Cálcio é um produto biocompatível e biodegradável composto por microesferas suspensas em gel carreador. O objetivo principal é a neocolagênese (estímulo biológico progressivo de novo colágeno tipo I e elastina) por ativação direta dos fibroblastos. O resultado NÃO é imediato: o pico de melhora da qualidade, espessura dérmica e firmeza da pele ocorre de 60 a 90 dias após a aplicação, com duração média estimada de 12 a 24 meses.\n\n3. RISCOS E EFEITOS ADVERSOS\nInchaço (edema), vermelhidão local (eritema), equimoses/hematomas nos orifícios de entrada da cânula, sensação de nódulos ou rigidez transitória enquanto as partículas estimulam a matriz dérmica. Casos raros envolvem reação inflamatória tardia, formação de granulomas ou obstrução vascular.\n\n4. CUIDADOS PÓS-PROCEDIMENTO\n• Realizar as massagens diárias orientadas pelo profissional, se prescritas formalmente, para correta dispersão homogênea das microesferas.\n• Evitar treinos vigorosos por 24 a 48 horas.\n• Não expor a região tratada ao calor extremo (sauna, sol, água quente) nas primeiras 48 horas.\n• Aguardar de 15 a 30 dias para a realização de novos procedimentos estéticos térmicos (como laser ou radiofrequência) na mesma área tratada.\n\n5. DECLARAÇÃO E CONSENTIMENTO ESCLARECIDO\nDeclaro que li atentamente, compreendi e fui devidamente informado(a) sobre a Bioestimulação de Cálcio (CaHA), seu mecanismo biológico progressivo, riscos, possíveis reações teciduais e cuidados pós-procedimento. Tive a oportunidade de esclarecer todas as dúvidas e dou meu consentimento livre e espontâneo para sua realização."
   },
   {
-    slug: 'microagulhamento',
-    title: 'Termo de Consentimento — Microagulhamento / Drug Delivery',
-    procedure_name: 'Microagulhamento com Drug Delivery',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-MICROAGULHAMENTO FACIAL COM DRUG DELIVERY
-
-Eu, {{NOME_PACIENTE}}, declaro ter sido esclarecida(o) sobre o microagulhamento com sistema de agulhas estéreis e descartáveis.
-
-1. MECANISMO E OBJETIVO:
-Criação de microlesões controladas na epiderme e derme para estimular a cascata inflamatória positiva de reparação tecidual e colágeno, associado à permeação otimizada de ativos estéreis (fatores de crescimento, clareadores e peptídeos).
-
-2. FASE PÓS-PROCEDIMENTO:
-A pele apresentará vermelhidão intensa e calor nas primeiras 24 a 48 horas, semelhante a uma queimadura solar leve, seguida por leve descamação e sensibilidade temporária.
-
-3. RESTRIÇÕES IMPORTANTES:
-Não aplicar maquiagem nas primeiras 24 horas; não se expor ao sol; não utilizar ácidos até a completa recuperação da barreira cutânea; usar somente produtos hipoalergênicos e regeneradores recomendados.
-
-4. ACEITE:
-Confirmo a inexistência de infecções cutâneas ativas (como herpes labial ativa) e autorizo o procedimento.`
+    "slug": "bioestimulador-plla",
+    "title": "Termo de Consentimento — Bioestimulador de Colágeno (PLLA)",
+    "procedure_name": "Bioestimulador PLLA (Ácido Poli-L-Láctico)",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • BIOESTIMULAÇÃO DE COLÁGENO COM ÁCIDO POLI-L-LÁCTICO (PLLA)\n\n1. DADOS DE IDENTIFICAÇÃO E PRODUTO\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. FUNCIONAMENTO E FINALIDADE\nO PLLA (Ácido Poli-L-Láctico) é um polímero sintético, biocompatível, reabsorvível e biodegradável que induz uma resposta inflamatória tecidual subcrônica controlada, levando ao espessamento dérmico gradual e restauração de volume pela produção endógena de colágeno. NÃO atua como preenchedor de volume imediato. O plano de tratamento pode demandar sessões seriadas para atingir o resultado esperado, visível entre 30 e 90 dias após cada sessão.\n\n3. RISCOS E COMPLICAÇÕES\nAlém dos efeitos mecânicos da injeção (dor leve, inchaço, manchas roxas/equimoses transitórias), há o risco de formação de micropápulas ou granulomas tardios não inflamatórios caso a regra de massagem pós-aplicação não seja executada rigorosamente pelo paciente.\n\n4. COMPROMISSO COM O CUIDADO PÓS-APLICAÇÃO (REGRA FUNDAMENTAL)\n• Comprometo-me a realizar massagens firmes na área tratada (regra 5x5x5: técnica dos 5 minutos, 5 vezes ao dia, por 5 dias consecutivos, ou conforme protocolo específico instruído pela profissional).\n• Evitar banhos muito quentes, saunas e exercícios físicos de alta intensidade por 48 horas.\n• Proteger a área de exposição solar enquanto houver equimoses para evitar pigmentação indesejada.\n\n5. DECLARAÇÃO E CONSENTIMENTO ESCLARECIDO\nDeclaro que li atentamente, compreendi e fui devidamente informado(a) sobre a Bioestimulação de Colágeno com Ácido Poli-L-Láctico (PLLA), seu mecanismo de ação gradual, riscos e a necessidade estrita da realização das massagens recomendadas para a prevenção de nódulos. Tive a oportunidade de esclarecer todas as dúvidas e dou meu consentimento livre e espontâneo."
   },
   {
-    slug: 'limpeza-de-pele',
-    title: 'Termo de Consentimento — Limpeza de Pele Profunda',
-    procedure_name: 'Limpeza de Pele Profunda com Extração',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-LIMPEZA DE PELE PROFUNDA E HIGIENIZAÇÃO CUTÂNEA
-
-Eu, {{NOME_PACIENTE}}, autorizo a realização do procedimento de Limpeza de Pele Profunda.
-
-1. OBJETIVO:
-Higienização, emoliência, desobstrução de poros, extração criteriosa de comedões (cravos) e miliums, controle da oleosidade e hidratação profunda.
-
-2. REAÇÕES NATURAIS:
-A extração manual e mecânica pode ocasionar vermelhidão temporária, sensibilidade ou pequenas marquinhas passageiras nas regiões de maior acúmulo de impurezas, que regridem em até 24 a 48 horas.
-
-3. RECOMENDAÇÕES PÓS-EXTRAÇÃO:
-Evitar o uso de maquiagens pesadas nas primeiras 12 horas, manter a higienização suave, não espremer eventuais lesões residuais e aplicar protetor solar diariamente.
-
-4. ACEITE:
-Concordo e autorizo o atendimento.`
+    "slug": "fios-de-pdo",
+    "title": "Termo de Consentimento — Implante de Fios de Polidioxanona (PDO)",
+    "procedure_name": "Implante de Fios de PDO",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • IMPLANTE DE FIOS DE POLIDIOXANONA (PDO)\n\n1. DADOS DE IDENTIFICAÇÃO E ESPECIFICAÇÕES\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\nTipos de Fios: Lisos / Espiralados (estímulo dérmico e compactação) ou Espiculados / Tração (sustentação mecânica e reposicionamento).\n\n2. MECANISMO DE AÇÃO\nProcedimento indicado para sustentação mecânica e reposicionamento de tecidos ptosados (no caso de fios de tração) e neoformação de colágeno (fios lisos/espiculados). O material é 100% biodegradável, sendo reabsorvido pelo organismo entre 6 e 8 meses, mantendo o colágeno residual gerado por 12 a 18 meses.\n\n3. RISCOS ESPECÍFICOS\nSensação de repuxamento ou peso, pontadas ou dor ao mastigar/sorrir, assimetrias transitórias, ondulações na pele (dimpling / pregas passageiras), extrusão (ponta do fio emergindo na derme/pele), migração, hematomas e infecção no orifício de entrada.\n\n4. RESTRIÇÕES PÓS-APLICAÇÃO\n• Não massagear, pressionar a face ou abrir excessivamente a boca nas primeiras 2 semanas.\n• Dormir com a cabeça elevada e evitar deitar sobre as bochechas por pelo menos 7 a 10 dias.\n• Não praticar esportes de impacto ou atividades com movimentos bruscos por 7 dias.\n• Evitar procedimentos como massagens faciais, ultrassom microfocado ou radiofrequência por no mínimo 30 a 60 dias na área tratada.\n\n5. DECLARAÇÃO E CONSENTIMENTO ESCLARECIDO\nDeclaro que li atentamente, compreendi e fui devidamente informado(a) sobre o Implante de Fios de PDO, seu mecanismo de ação, riscos, possíveis assimetrias temporárias e a necessidade de cumprimento estrito das restrições pós-aplicação. Tive a oportunidade de esclarecer todas as dúvidas e dou meu consentimento livre e espontâneo."
   },
   {
-    slug: 'fios-de-pdo',
-    title: 'Termo de Consentimento — Fios de Sustentação / PDO',
-    procedure_name: 'Aplicação de Fios de PDO (Polidioxanona)',
-    content: `TERMO DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-FIOS DE POLIDIOXANONA (PDO)
-
-Eu, {{NOME_PACIENTE}}, declaro ter sido esclarecida(o) sobre o tratamento com Fios de PDO (lisos, espiculados ou de tração).
-
-1. OBJETIVO DO TRATAMENTO:
-Os fios de PDO são biocompatíveis e absorvíveis pelo corpo. Atuam promovendo estímulo intensivo de colágeno ao longo do seu trajeto ou realizando tração/sustentação mecânica de tecidos ptosados (caídos).
-
-2. EXPECTATIVAS E SENSAÇÕES PÓS-PROCEDIMENTO:
-É esperado leve desconforto à mastigação ou mímica facial nos primeiros dias, edema localizado, sensação de repuxamento e eventuais pequenos hematomas. O processo de absorção ocorre entre 6 a 8 meses, enquanto o colágeno gerado permanece por tempo superior.
-
-3. CUIDADOS ESPECÍFICOS:
-Evitar movimentos mastigatórios bruscos ou excessivamente amplos nos primeiros 7 dias; dormir preferencialmente de barriga para cima; evitar massagens faciais ou manipulação da área tratada por 30 dias.
-
-4. AUTORIZAÇÃO:
-Concordo plenamente e autorizo a execução do procedimento.`
+    "slug": "laser-thulium-lavieen",
+    "title": "Termo de Consentimento — Laser de Thulium 1927 nm (Lavieen / BB Laser)",
+    "procedure_name": "Laser de Thulium 1927 nm (Lavieen)",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • LASER DE THULIUM 1927 NM (LAVIEEN / BB LASER)\n\n1. IDENTIFICAÇÃO DAS PARTES\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. RASTREABILIDADE TÉCNICA E PROTOCOLO APLICADO\nEquipamento: Laser Lavieen (Laser Fracionado Thulium 1927 nm sub-ablativo / não-ablativo).\nIndicações: Melasma / Hipercromias, Poros dilatados / Textura, Linhas finas / Rejuvenescimento, Cicatrizes de acne, BB Laser (Glow de Porcelana) ou Queda Capilar (Drug Delivery).\n\n3. INFORMAÇÕES GERAIS E MECANISMO DE AÇÃO\nO Lavieen é uma tecnologia a laser fracionado com comprimento de onda de 1927 nm (Thulium), com altíssima afinidade pela água presente no tecido cutâneo. Atua de maneira sub-ablativa ou não-ablativa, criando microzonas térmicas de coagulação controladas na junção dermoepidérmica que estimulam a renovação da epiderme e a síntese de colágeno na derme papilar, sem romper agressivamente a barreira cutânea superficial.\n• Efeito Esperado: Clareamento gradual de manchas superficiais, homogeneização do tom da pele, redução de poros dilatados, atenuação de linhas finas e refinamento da textura (\"efeito pele de porcelana / BB Glow\").\n• Periodicidade e Manutenção: Os resultados clínicos evoluem gradualmente de 7 a 30 dias após cada sessão. Manchas crônicas como o melasma NÃO têm cura definitiva, sendo o procedimento uma ferramenta eficaz de controle e clareamento, exigindo cuidados contínuos em domicílio e sessões periódicas de manutenção.\n\n4. RISCOS, EFEITOS ESPERADOS E COMPLICAÇÕES POSSÍVEIS\n• Efeitos Comuns e Transitórios: Eritema (vermelhidão) intensa e sensação de ardência ou calor nas primeiras 12 a 48 horas; edema leve a moderado, principalmente na região periorbital; aspecto de \"pele áspera / lixa\" e formação de microcrostas acastanhadas minúsculas a partir do 2º ou 3º dia, que descamam espontaneamente entre o 4º e o 7º dia.\n• Riscos Específicos e Raros: Hiperpigmentação Pós-Inflamatória (HPI) decorrente de exposição solar precoce, fototipo alto ou se as casquinhas forem puxadas/esfregadas; hipopigmentação (clareamento excessivo pontual da pele); queimaduras superficiais pontuais; reativação do vírus do herpes simples perioral pelo calor; infecções secundárias por quebra e manipulação indevida da barreira; erupção acneiforme transitória após a sessão.\n\n5. CONTRAINDICAÇÕES CLÍNICAS\nGravidez ou amamentação; bronzeamento recente (ativo) ou planos de exposição solar direta nas próximas 3 a 4 semanas; infecção cutânea ativa, dermatites, feridas ou lesão de herpes ativa no local; uso recente de isotretinoína oral (Roacutan) nos últimos 6 meses; histórico de cicatrização anormal com formação de queloides graves; uso de medicações fotossensibilizantes sem prévia interrupção ou liberação profissional; neoplasias ativas ou doenças autoimunes descompensadas com fotossensibilidade (ex.: Lúpus).\n\n6. CUIDADOS PRÉ E PÓS-PROCEDIMENTO (COMPROMISSO DO(A) PACIENTE)\n• Proteção Solar Obrigatória: Aplicar protetor solar de amplo espectro (FPS 50 ou superior) a cada 2 a 3 horas, mesmo em ambientes fechados, a partir do dia seguinte ao procedimento.\n• Restrição Solar Absoluta: Não se expor voluntariamente ao sol direto, praia, piscina ou saunas por pelo menos 15 dias após a sessão.\n• Proibido Arrancar Casquinhas: Não esfregar, coçar ou remover mecanicamente as microcrostas (\"casquinhas de lixa\"); permitir que se desprendam naturalmente durante a lavagem suave.\n• Higiene e Cosméticos: Utilizar sabonete neutro e aplicar exclusivamente regeneradores dérmicos calmantes prescritos. Não usar ácidos (retinóico, glicólico), esfoliantes ou álcool por 7 a 10 dias. Evitar maquiagem pesada por 24 a 48h.\nIMPORTANTE: O desprendimento forçado das microcrostas ou a exposição solar antes da completa recuperação da pele aumentam drasticamente o risco de manchas escuras (Hiperpigmentação Pós-Inflamatória).\n\n7. DECLARAÇÕES, OBRIGAÇÃO DE MEIO E CONSENTIMENTO ESCLARECIDO\n• ESTOU CIENTE de que a resposta estética ao Laser Thulium varia de indivíduo para indivíduo, dependendo de fatores biológicos, fototipo, histórico prévio de manchas, desordens hormonais e disciplina rigorosa no pós-procedimento com uso diário de fotoproteção.\n• COMPREENDO que a obrigação da profissional é de meio, utilizando equipamentos regulamentados pela ANVISA, técnicas consolidadas e parâmetros individualizados para o meu tipo de pele, não sendo possível garantir simetria absoluta ou ausência total de manchas.\n• Tive a oportunidade de fazer todas as perguntas, que foram respondidas com clareza e sem termos de difícil compreensão.\n\n8. AUTORIZAÇÃO DE USO DE IMAGEM (LGPD)\n( ) Prontuário Médico: Autorizo exclusivamente para acompanhamento de prontuário clínico e histórico confidencial.\n( ) Divulgação e Ensino: Autorizo fotos de \"antes e depois\" para fins didáticos, científicos e divulgação em redes sociais profissionais.\n( ) Não Autorizo: Não autorizo o uso da minha imagem para divulgação externa, apenas arquivo interno confidencial."
   },
   {
-    slug: 'geral-estetica',
-    title: 'Termo Geral de Consentimento — Procedimentos Estéticos',
-    procedure_name: 'Procedimento Estético / Terapêutico Geral',
-    content: `TERMO GERAL DE CONSENTIMENTO LIVRE E ESCLARECIDO (TCLE)
-PROCEDIMENTOS ESTÉTICOS E DERMOCOSMÉTICOS
-
-Eu, {{NOME_PACIENTE}}, declaro que busquei livremente os serviços profissionais da Fran e autorizo a realização do protocolo acordado em consulta prévia.
-
-1. INFORMAÇÕES GERAIS:
-Fui informada(o) com clareza a respeito da natureza do procedimento, seus benefícios esperados, limitações terapêuticas, alternativas disponíveis e cuidados necessários antes e depois da sessão.
-
-2. INDIVIDUALIDADE BIOLÓGICA:
-Reconheço que a estética depende diretamente da resposta biológica individual de cada organismo, hábitos de vida, exposição solar, alimentação e cumprimento das orientações de cuidados diários (home care), não sendo possível garantir resultados idênticos aos de outros pacientes.
-
-3. VERACIDADE DAS INFORMAÇÕES:
-Garanto que declarei todas as condições de saúde, alergias, medicações em uso e alterações recentes do meu estado físico no questionário de anamnese.
-
-4. CONSENTIMENTO VOLUNTÁRIO:
-Tive todas as minhas dúvidas sanadas e concedo minha livre autorização para a realização do tratamento.`
+    "slug": "ultrassom-focado",
+    "title": "Termo de Consentimento — Ultrassom Focado de Alta Intensidade (Micro e Macrofocado)",
+    "procedure_name": "Ultrassom Micro e Macrofocado",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • ULTRASSOM FOCADO DE ALTA INTENSIDADE (MICRO E MACROFOCADO)\n\n1. DADOS DE IDENTIFICAÇÃO E PARÂMETROS\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\nFinalidade do Procedimento:\n• Microfocado: Estímulo de colágeno profundo e lifting do SMAS facial.\n• Macrofocado: Redução de tecido adiposo corporal ou submentoniano (papada).\n\n2. DESCRIÇÃO E COMPREENSÃO TÉCNICA\nA tecnologia emite pontos de coagulação térmica profunda (entre 60°C e 70°C) em profundidades que variam de 1,5 mm a 13 mm sem romper a epiderme superficial. Os resultados de contração da fáscia muscular e neocolagênese desenvolvem-se gradativamente de 30 a 90 dias, perdurando por até 12 a 18 meses dependendo de fatores metabólicos, nutricionais e idade do paciente.\n\n3. RISCOS E COMPLICAÇÕES\nEritema transitório, edema leve a moderado, sensibilidade nos rebordos ósseos por alguns dias, equimoses pontuais e dormência transitória (parestesia superficial) por acometimento temporário de ramos nervosos periféricos, que regride espontaneamente. Queimaduras e marcas lineares superficiais são eventos raros.\n\n4. CONTRAINDICAÇÕES ESPECÍFICAS\nPresença de marcapasso cardíaco, implantes eletrônicos, placas metálicas na face, fios tensores não absorvíveis no plano de disparo ou preenchimentos definitivos na área anatômica de tratamento.\n\n5. DECLARAÇÃO E CONSENTIMENTO ESCLARECIDO\nDeclaro que li atentamente, compreendi e fui devidamente informado(a) sobre os objetivos, benefícios, riscos, contraindicações e cuidados pertinentes ao procedimento de Ultrassom Focado de Alta Intensidade. Tive a oportunidade de esclarecer todas as minhas dúvidas e dou meu consentimento livre e espontâneo para sua realização."
+  },
+  {
+    "slug": "hialuronidase-off-label",
+    "title": "Termo de Consentimento — Degradação Enzimática com Hialuronidase (Uso Off-Label)",
+    "procedure_name": "Hialuronidase (Uso Off-Label)",
+    "content": "DRA. FRANSUELE HANEL\nBIOMEDICINA ESTÉTICA AVANÇADA & INTEGRATIVA • CRBM-5: 015427\nTCLE • DEGRADAÇÃO ENZIMÁTICA COM HIALURONIDASE (USO OFF-LABEL EM ESTÉTICA)\n\n1. DADOS DE IDENTIFICAÇÃO\nPaciente: {{NOME_PACIENTE}}\nProfissional Responsável: Dra. Fransuele Hanel | Biomédica Esteta | CRBM-5 015427\n\n2. NATUREZA DO PROCEDIMENTO E USO OFF-LABEL\nA hialuronidase é uma enzima degradadora de glicosaminoglicanos indicada para dissolver ácido hialurônico decorrente de excessos, assimetrias inestéticas, insatisfação ou desordens vasculares (isquemia tecidual). Fui expressamente informado(a) de que o uso para dissolução de preenchedores é reconhecido na prática clínica médica mundial como off-label em relação à sua bula regulatória original brasileira.\n\n3. RISCOS E EFEITOS ADVERSOS\n• Risco Alérgico: Potencial de reações de hipersensibilidade ou alergia local severa/anafilaxia, razão pela qual informei rigorosamente meu histórico alérgico prévio.\n• Efeitos Teciduais: Pode haver dissolução transitória do ácido hialurônico natural da própria derme do paciente, gerando sensação de flacidez temporária que costuma se restabelecer biologicamente com o tempo. Edema, ardor e sensação de queimação local durante a infusão enzimática.\n\n4. ORIENTAÇÕES PÓS-PROCEDIMENTO\n• Manter repouso de atividades físicas intensas por 24 horas.\n• Aguardar de 15 a 21 dias para reavaliação tecidual antes de qualquer nova tentativa de reaplicação de ácido hialurônico na mesma área tratada.\n• Atenção Imediata: Comunicar prontamente ao consultório prurido disseminado, inchaço labial/laríngeo ou falta de ar.\n\n5. DECLARAÇÃO E CONSENTIMENTO ESCLARECIDO\nDeclaro que li atentamente, compreendi e fui devidamente informado(a) sobre a natureza da aplicação da Hialuronidase (uso off-label em estética), seus benefícios esperados, riscos e possíveis reações teciduais. Tive a oportunidade de esclarecer todas as dúvidas e dou meu consentimento livre e espontâneo para sua realização."
   }
 ];
 

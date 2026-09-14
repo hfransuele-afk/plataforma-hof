@@ -1,15 +1,21 @@
 :root {
-  --bg: #f3ece5;
-  --bg-2: #fffaf5;
-  --surface: rgba(255, 250, 245, 0.92);
-  --line: #d3c2b1;
-  --text: #2f2520;
-  --muted: #66564b;
-  --accent: #ad5f42;
-  --accent-2: #6f9f89;
+  --bg: #f7f5f0;
+  --bg-2: #ffffff;
+  --surface: rgba(255, 255, 255, 0.95);
+  --line: #ded6ca;
+  --text: #18261e;
+  --muted: #56695e;
+  --accent: #1c3f2d;
+  --accent-hover: #142e21;
+  --accent-2: #c5a059;
+  --gold: #bfa15f;
+  --gold-hover: #ab8d4d;
+  --gold-light: #fbf9f4;
+  --gold-border: #d4be88;
+  --gold-text: #8c6e2d;
   --danger: #b63f3f;
-  --shadow: 0 16px 40px rgba(79, 52, 38, 0.13);
-  --radius: 18px;
+  --shadow: 0 16px 40px rgba(27, 63, 43, 0.09);
+  --radius: 16px;
 }
 
 * {
@@ -26,7 +32,7 @@ body {
   min-height: 100vh;
   font-family: 'Manrope', sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at top left, #ead9cd 0%, #f4eee6 34%, #f2ebe3 65%, #ede4dc 100%);
+  background: radial-gradient(circle at top left, #ede6db 0%, #f7f5f0 34%, #f5f1ea 65%, #ede6db 100%);
 }
 
 h1,
@@ -40,8 +46,8 @@ legend {
 .backdrop {
   position: fixed;
   inset: 0;
-  background-image: linear-gradient(115deg, rgba(173, 95, 66, 0.08), transparent 35%),
-    linear-gradient(45deg, rgba(111, 159, 137, 0.09), transparent 40%);
+  background-image: linear-gradient(115deg, rgba(28, 63, 45, 0.07), transparent 35%),
+    linear-gradient(45deg, rgba(197, 160, 89, 0.08), transparent 40%);
   pointer-events: none;
 }
 
@@ -141,8 +147,8 @@ legend {
 }
 
 .btn.primary {
-  background: linear-gradient(120deg, var(--accent), #bf775b);
-  border-color: #9f593f;
+  background: linear-gradient(135deg, #1c3f2d, #27543d);
+  border-color: #142e21;
   color: #fff8f4;
 }
 
@@ -252,7 +258,7 @@ legend {
 /* ─── Agenda: dia atual ────────────────────────────────── */
 
 .calendar-cell.is-today {
-  background: rgba(173, 95, 66, 0.06);
+  background: rgba(28, 63, 45, 0.06);
   border: 2px solid var(--accent) !important;
 }
 
@@ -277,7 +283,7 @@ legend {
   transition: background 0.15s;
 }
 
-.calendar-event-info:hover { background: rgba(173, 95, 66, 0.08); }
+.calendar-event-info:hover { background: rgba(28, 63, 45, 0.07); }
 
 .evt-time { font-size: 0.75rem; color: var(--muted); font-weight: 600; }
 
@@ -442,7 +448,7 @@ legend {
 }
 
 .bubble--user {
-  background: rgba(173, 95, 66, 0.13);
+  background: rgba(28, 63, 45, 0.13);
   border-bottom-right-radius: 4px;
 }
 
@@ -624,7 +630,7 @@ button:focus {
 }
 
 .chip.pending {
-  background: rgba(173, 95, 66, 0.14);
+  background: rgba(28, 63, 45, 0.14);
   color: #82452f;
 }
 
@@ -774,7 +780,7 @@ th {
 }
 
 .msg-tag {
-  background: rgba(173, 95, 66, 0.14);
+  background: rgba(28, 63, 45, 0.14);
   border-radius: 999px;
   padding: 3px 8px;
   color: #7e4732;
@@ -818,7 +824,7 @@ th {
   padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid #c79f8b;
-  background: rgba(173, 95, 66, 0.12);
+  background: rgba(28, 63, 45, 0.12);
   color: #814932;
   font-weight: 800;
   font-size: 0.78rem;
@@ -890,7 +896,7 @@ th {
 }
 
 .calendar-cell.has-events {
-  background: rgba(173, 95, 66, 0.07);
+  background: rgba(28, 63, 45, 0.07);
   border-color: #c9a090;
 }
 
@@ -1033,7 +1039,7 @@ th {
 }
 
 .top-nav-item:hover {
-  background: rgba(173, 95, 66, 0.1);
+  background: rgba(28, 63, 45, 0.1);
   color: var(--accent);
 }
 
@@ -1111,7 +1117,7 @@ th {
   width: 60px;
   height: 60px;
   border-radius: 16px;
-  box-shadow: 0 6px 18px rgba(173, 95, 66, 0.28);
+  box-shadow: 0 6px 18px rgba(28, 63, 45, 0.28);
 }
 
 .patient-folder-title {
@@ -1168,7 +1174,7 @@ th {
 }
 
 .folder-tab:hover {
-  background: rgba(173, 95, 66, 0.08);
+  background: rgba(28, 63, 45, 0.07);
   color: var(--accent);
 }
 
@@ -1279,7 +1285,7 @@ th {
 .evolution-procedure {
   font-size: 0.88rem;
   font-weight: 600;
-  background: rgba(173, 95, 66, 0.1);
+  background: rgba(28, 63, 45, 0.1);
   color: var(--text);
   padding: 3px 10px;
   border-radius: 8px;
@@ -1478,7 +1484,7 @@ th {
   border: 1px solid var(--accent);
   border-radius: 16px;
   padding: 22px;
-  box-shadow: 0 10px 30px rgba(173, 95, 66, 0.12);
+  box-shadow: 0 10px 30px rgba(28, 63, 45, 0.12);
   position: sticky;
   top: 20px;
 }
@@ -1646,3 +1652,243 @@ th {
   cursor: pointer;
 }
 
+
+
+/* ── DRA. FRAN HANEL LUXURY BRANDING & TCLE STYLING ────────── */
+.top-nav {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 24px rgba(28, 63, 45, 0.06);
+}
+
+.top-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+}
+
+.top-nav-logo-img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.top-nav-logo {
+  font-family: 'Cinzel', 'Marcellus', serif;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  font-size: 1.2rem;
+  line-height: 1.1;
+}
+
+.top-nav-sub {
+  font-size: 0.72rem;
+  color: var(--gold-text);
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.btn.primary {
+  background: linear-gradient(135deg, #1c3f2d 0%, #29573f 100%);
+  border: 1px solid #142e21;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(28, 63, 45, 0.2);
+}
+
+.btn.primary:hover {
+  background: linear-gradient(135deg, #142e21 0%, #204532 100%);
+  box-shadow: 0 6px 18px rgba(28, 63, 45, 0.28);
+}
+
+.btn.gold {
+  background: linear-gradient(135deg, #c5a059 0%, #ab8d4d 100%);
+  border: 1px solid #997c3e;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn.gold:hover {
+  background: linear-gradient(135deg, #b8934c 0%, #997c3e 100%);
+  box-shadow: 0 6px 16px rgba(197, 160, 89, 0.3);
+}
+
+/* Banner de Identidade Visual Oficial (Dra. Fran Hanel) */
+.brand-clinical-header {
+  background: #1c3f2d;
+  color: #f7f5f0;
+  border-radius: 14px;
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #2d553f;
+  box-shadow: 0 10px 30px rgba(28, 63, 45, 0.2);
+  margin-bottom: 20px;
+}
+
+.brand-clinical-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand-clinical-monogram {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+}
+
+.brand-clinical-title {
+  margin: 0;
+  font-family: 'Cinzel', 'Marcellus', serif;
+  font-size: 1.35rem;
+  letter-spacing: 0.08em;
+  color: #e2c275;
+  text-transform: uppercase;
+}
+
+.brand-clinical-sub {
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  color: #f7f5f0;
+  opacity: 0.9;
+  text-transform: uppercase;
+}
+
+.brand-clinical-meta {
+  text-align: right;
+  font-size: 0.82rem;
+  color: #e2c275;
+  border-left: 1px solid rgba(226, 194, 117, 0.3);
+  padding-left: 16px;
+  line-height: 1.4;
+}
+
+.brand-clinical-meta strong {
+  color: #ffffff;
+}
+
+/* Aviso LGPD */
+.lgpd-notice-bar {
+  background: #fbf9f4;
+  border: 1px solid #dcd3c5;
+  border-left: 4px solid var(--gold);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.lgpd-notice-bar strong {
+  color: var(--text);
+}
+
+/* Grade de Botões de Emissão de Termos de Consentimento (TCLE) */
+.tcle-actions-panel {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 18px rgba(28, 63, 45, 0.04);
+}
+
+.tcle-actions-title {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tcle-btn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.tcle-emit-btn {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  transition: all 0.18s ease;
+}
+
+.tcle-emit-btn:hover {
+  background: #1c3f2d;
+  color: #ffffff;
+  border-color: #1c3f2d;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(28, 63, 45, 0.2);
+}
+
+.tcle-emit-btn span.icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/* Termos emitidos / Cards */
+.consent-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 4px 16px rgba(28, 63, 45, 0.04);
+  transition: border-color 0.2s;
+}
+
+.consent-card:hover {
+  border-color: var(--gold-border);
+}
+
+.consent-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.consent-card-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.badge.signed {
+  background: #e8f5ed;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.badge.pending {
+  background: #fefce8;
+  color: #854d0e;
+  border: 1px solid #fef08a;
+}

@@ -364,13 +364,17 @@ function ensureNewClinicalAndFinancialTables() {
     CREATE INDEX IF NOT EXISTS idx_financials_patient ON procedure_financials(patient_id);
   `);
 
-  const countTemplates = db.prepare('SELECT count(*) as c FROM consent_templates').get().c;
-  if (countTemplates === 0 && consentTemplates && consentTemplates.length) {
-    const insertTpl = db.prepare(
-      'INSERT INTO consent_templates (slug, title, procedure_name, content, created_at) VALUES (?, ?, ?, ?, ?)'
-    );
+  if (consentTemplates && consentTemplates.length) {
+    const upsertTpl = db.prepare(`
+      INSERT INTO consent_templates (slug, title, procedure_name, content, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        title = excluded.title,
+        procedure_name = excluded.procedure_name,
+        content = excluded.content
+    `);
     for (const tpl of consentTemplates) {
-      insertTpl.run(tpl.slug, tpl.title, tpl.procedure_name, tpl.content, nowIso());
+      upsertTpl.run(tpl.slug, tpl.title, tpl.procedure_name, tpl.content, nowIso());
     }
   }
 
@@ -579,7 +583,7 @@ function createPatientCode() {
 function getOrCreatePatientFromPayload(payload, explicitPatientId = null) {
   const fullName = String(payload.nomeCompleto || '').trim();
   const email = String(payload.email || '').trim().toLowerCase() || null;
-  const phone = String(payload.telefone || '').trim() || null;
+  const phone = String(payload.whatsapp || payload.telefone || '').trim() || null;
 
   if (!fullName) {
     throw new Error('Nome da paciente é obrigatório para criar prontuário.');
@@ -827,8 +831,11 @@ function layout({ title, body, userEmail = null, activeNav = '' }) {
     ? `
       <nav class="top-nav">
         <a href="/admin" class="top-nav-brand">
-          <span class="top-nav-logo">Fran Hanel</span>
-          <span class="top-nav-sub">Estética & Saúde</span>
+          <img src="/public/logo-fh.png" alt="Dra. Fran Hanel" class="top-nav-logo-img">
+          <div>
+            <div class="top-nav-logo">Dra. Fran Hanel</div>
+            <div class="top-nav-sub">Biomedicina Estética • CRBM-5 015427</div>
+          </div>
         </a>
         <div class="top-nav-links">
           <a class="top-nav-item ${activeNav === 'agenda' ? 'active' : ''}" href="/admin/agenda">📅 Agenda</a>
@@ -857,7 +864,7 @@ function layout({ title, body, userEmail = null, activeNav = '' }) {
         <title>${escapeHtml(title)}</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700;800&family=Marcellus&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
         <link rel="stylesheet" href="/public/styles.css">
       </head>
       <body>
@@ -1270,47 +1277,60 @@ app.get('/paciente/:token', (req, res) => {
     .join('');
 
   const body = `
-    <section class="hero-card compact">
-      <p class="eyebrow">Questionário Clínico</p>
-      <h1>Consultoria personalizada de skincare</h1>
-      <p class="hero-copy">Preencha com calma. As informações serão vistas apenas pela profissional.</p>
-    </section>
+    <div class="brand-clinical-header">
+      <div class="brand-clinical-left">
+        <img src="/public/logo-fh.png" alt="Dra. Fran Hanel" class="brand-clinical-monogram">
+        <div>
+          <h1 class="brand-clinical-title">Dra. Fran Hanel</h1>
+          <p class="brand-clinical-sub">Biomedicina Estética Avançada & Integrativa</p>
+        </div>
+      </div>
+      <div class="brand-clinical-meta">
+        <div>CRBM-5: <strong>015427</strong></div>
+        <div>Ficha Oficial de Anamnese</div>
+      </div>
+    </div>
+
+    <div class="lgpd-notice-bar">
+      <strong>LEI GERAL DE PROTEÇÃO DE DADOS (LGPD - LEI Nº 13.709/18):</strong>
+      Os dados fornecidos são confidenciais e destinados exclusivamente ao planejamento diagnóstico, anamnese clínica de segurança e execução personalizada de tratamentos estéticos.
+    </div>
 
     <form class="panel form-stack" method="post" action="/paciente/${escapeHtml(token)}" enctype="multipart/form-data">
       <input type="hidden" name="_csrf" value="${escapeHtml(patientCsrfToken(token))}">
       ${sectionsHtml}
 
       <section class="section-block" id="fotos">
-        <h2>19) Envio de Fotos</h2>
+        <h2>6. Envio de Fotos (Opcional)</h2>
         <p class="muted">
-          Envie fotos do rosto (frontal, perfis e close da queixa) e fotos dos produtos que você usa.
-          Prefira luz natural, sem maquiagem e sem filtro.
+          Se desejar, envie fotos do seu rosto (frontal, perfis e close da queixa) ou produtos/exames para análise prévia da Dra. Fran Hanel.
+          Prefira luz natural, sem maquiagem e sem filtros.
         </p>
 
         <label class="field">
-          <span>Fotos do rosto</span>
+          <span>Fotos do rosto (frontal e perfis)</span>
           <input type="file" name="facePhotos" accept="image/*" multiple>
         </label>
 
         <label class="field">
-          <span>Fotos dos produtos da rotina</span>
-          <input type="file" name="productPhotos" accept="image/*" multiple>
+          <span>Fotos de produtos da rotina ou exames</span>
+          <input type="file" name="productPhotos" accept="image/*,application/pdf" multiple>
         </label>
       </section>
 
       <section class="section-block" id="assinatura">
-        <h2>Assinatura digital</h2>
-        <p class="muted" style="margin-bottom:12px">Assine abaixo para confirmar que as informações prestadas são verdadeiras.</p>
+        <h2>Assinatura Digital</h2>
+        <p class="muted" style="margin-bottom:12px">Assine no quadro abaixo com o dedo (no celular) ou com o mouse para certificar a autenticidade dos dados prestados.</p>
         <div class="signature-wrap">
           <canvas id="signatureCanvas" class="signature-canvas" width="600" height="180"></canvas>
           <div class="signature-actions">
-            <button type="button" class="btn" onclick="clearSignature()">Limpar assinatura</button>
+            <button type="button" class="btn tiny ghost" onclick="clearSignature()">Limpar assinatura</button>
           </div>
         </div>
         <input type="hidden" name="signatureData" id="signatureData">
       </section>
 
-      <button class="btn primary block" type="submit" onclick="prepareSignature()">Enviar questionário</button>
+      <button class="btn primary block" type="submit" onclick="prepareSignature()" style="font-size:1.05rem;padding:14px">Salvar e Enviar Ficha de Anamnese</button>
     </form>
 
     <script>
@@ -1524,31 +1544,63 @@ app.get('/termo/:token', (req, res) => {
     .replace(/\{\{DATA\}\}/g, today);
 
   const body = `
+    <div class="brand-clinical-header" style="max-width:760px;margin:0 auto 16px">
+      <div class="brand-clinical-left">
+        <img src="/public/logo-fh.png" alt="Dra. Fran Hanel" class="brand-clinical-monogram">
+        <div>
+          <h1 class="brand-clinical-title">Dra. Fran Hanel</h1>
+          <p class="brand-clinical-sub">Biomedicina Estética Avançada & Integrativa</p>
+        </div>
+      </div>
+      <div class="brand-clinical-meta">
+        <div>CRBM-5: <strong>015427</strong></div>
+        <div>TCLE Digital</div>
+      </div>
+    </div>
+
     <section class="panel" style="max-width:760px;margin:0 auto">
       <div style="text-align:center;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:20px">
-        <p class="eyebrow" style="margin:0 0 6px">Fran Hanel · Estética & Saúde</p>
-        <h1 style="margin:0 0 8px;font-size:1.6rem">${escapeHtml(consent.procedure_name)}</h1>
+        <span class="badge" style="background:#e8f5ed;color:#166534;margin-bottom:8px;display:inline-block">Termo de Consentimento Livre e Esclarecido</span>
+        <h1 style="margin:0 0 8px;font-size:1.5rem;color:var(--accent)">${escapeHtml(consent.procedure_name)}</h1>
         <p class="muted" style="margin:0;font-size:0.9rem">
-          Paciente: <strong>${escapeHtml(consent.patient_name)}</strong> · Data: ${escapeHtml(today)}
+          Paciente: <strong>${escapeHtml(consent.patient_name)}</strong> · Data de Emissão: ${escapeHtml(today)}
         </p>
       </div>
 
-      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:22px;white-space:pre-wrap;line-height:1.65;font-size:0.94rem;color:var(--text);max-height:380px;overflow-y:auto">
+      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:22px;white-space:pre-wrap;line-height:1.65;font-size:0.94rem;color:var(--text);max-height:420px;overflow-y:auto">
 ${escapeHtml(termText)}
       </div>
 
       <form method="post" action="/termo/${escapeHtml(token)}" id="termSignForm">
         <input type="hidden" name="signatureData" id="termSignatureData">
 
-        <label class="field" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:18px;background:#fffaf6;padding:14px;border:1px solid var(--line);border-radius:12px">
+        <div class="field" style="margin-bottom:18px;background:var(--bg-2);padding:14px;border-radius:12px;border:1px solid var(--line)">
+          <span style="display:block;margin-bottom:8px;font-weight:700">Autorização de Uso de Imagem (LGPD):</span>
+          <div style="display:grid;gap:8px">
+            <label class="option-line">
+              <input type="radio" name="imageAuth" value="Prontuário Médico: Autorizo exclusivamente para acompanhamento de prontuário clínico e histórico confidencial." checked>
+              <span><strong>Prontuário Confidencial:</strong> Autorizo exclusivamente para acompanhamento de prontuário clínico interno.</span>
+            </label>
+            <label class="option-line">
+              <input type="radio" name="imageAuth" value="Divulgação e Ensino: Autorizo fotos/vídeos para fins didáticos, científicos e divulgação clínica profissional.">
+              <span><strong>Divulgação e Ensino:</strong> Autorizo fotos de &quot;antes e depois&quot; para fins didáticos e divulgação clínica profissional.</span>
+            </label>
+            <label class="option-line">
+              <input type="radio" name="imageAuth" value="Não Autorizo: Não autorizo o uso da minha imagem para divulgação.">
+              <span><strong>Não Autorizo:</strong> Não autorizo a utilização da minha imagem fora do arquivo médico confidencial.</span>
+            </label>
+          </div>
+        </div>
+
+        <label class="field" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:18px;background:#fbf9f4;padding:14px;border:1px solid var(--gold-border);border-radius:12px">
           <input type="checkbox" name="agreed" id="termAgreedCheck" required style="margin-top:3px;transform:scale(1.2)">
           <span style="font-size:0.9rem;line-height:1.4">
-            Declaro que li atentamente, compreendi todas as informações, riscos, cuidados pós-procedimento e concordo livremente com a realização de <strong>${escapeHtml(consent.procedure_name)}</strong>.
+            Declaro que li atentamente, compreendi todas as informações, riscos, orientações pós-procedimento e concordo livremente com a realização de <strong>${escapeHtml(consent.procedure_name)}</strong>.
           </span>
         </label>
 
         <label class="field" style="margin-bottom:18px">
-          <span>Nome Completo da Paciente *</span>
+          <span>Nome Completo da Paciente (ou Responsável Legal) *</span>
           <input type="text" name="signedName" value="${escapeHtml(consent.patient_name)}" required placeholder="Seu nome completo">
         </label>
 
@@ -1667,6 +1719,7 @@ app.post('/termo/:token', (req, res) => {
 
   const signatureData = String(req.body.signatureData || req.body.signature_data || '').trim();
   const signedName = String(req.body.signedName || req.body.signed_name || '').trim();
+  const imageAuth = String(req.body.imageAuth || '').trim();
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;
 
   if (!signatureData || !signatureData.startsWith('data:image/png')) {
@@ -1677,11 +1730,13 @@ app.post('/termo/:token', (req, res) => {
     return;
   }
 
+  const notesText = imageAuth ? `Uso de Imagem: ${imageAuth}` : null;
+
   db.prepare(`
     UPDATE patient_consents
-    SET status = 'signed', signature_data = ?, signed_name = ?, signed_at = ?, client_ip = ?
+    SET status = 'signed', signature_data = ?, signed_name = ?, signed_at = ?, client_ip = ?, notes = COALESCE(?, notes)
     WHERE id = ?
-  `).run(signatureData, signedName, nowIso(), String(clientIp), consent.id);
+  `).run(signatureData, signedName, nowIso(), String(clientIp), notesText, consent.id);
 
   res.redirect(`/termo/${encodeURIComponent(token)}`);
 });
@@ -1845,7 +1900,11 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     default_card_fee_pct: 3.5,
     default_clinic_split_pct: 30.0
   };
-  const consentTemplatesList = db.prepare('SELECT * FROM consent_templates ORDER BY title ASC').all();
+  const officialSlugs = consentTemplates.map((t) => t.slug);
+  const consentTemplatesList = db
+    .prepare(`SELECT * FROM consent_templates WHERE slug IN (${officialSlugs.map(() => '?').join(',')})`)
+    .all(...officialSlugs)
+    .sort((a, b) => officialSlugs.indexOf(a.slug) - officialSlugs.indexOf(b.slug));
 
   // ─── Renderização da Ficha de Anamnese ───────────────────
   let anamneseSectionHtml = '';
@@ -1929,21 +1988,26 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             </p>
           </div>
           <div>
-            <span class="eyebrow" style="font-size:0.72rem">Expectativa com Tratamento</span>
+            <span class="eyebrow" style="font-size:0.72rem">Expectativa / Resultado</span>
             <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
-              ${escapeHtml(latestData.expectativaConsultoria || 'Não informada')}
+              ${escapeHtml(Array.isArray(latestData.buscaResultado) ? latestData.buscaResultado.join(', ') : (latestData.buscaResultado || latestData.expectativaConsultoria || 'Não informada'))}
             </p>
           </div>
           <div>
-            <span class="eyebrow" style="font-size:0.72rem">Alergias / Medicamentos</span>
+            <span class="eyebrow" style="font-size:0.72rem">Alergias / Medicações</span>
             <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
-              ${escapeHtml(latestData.historicoAlergias || latestData.medicamentoContinuo || 'Nenhum relatado')}
+              ${escapeHtml(
+                (Array.isArray(latestData.alergiasConhecidas) ? latestData.alergiasConhecidas.join(', ') : latestData.alergiasConhecidas) ||
+                latestData.outrasAlergias ||
+                latestData.medicamentosContinuos ||
+                'Nenhuma relatada'
+              )}
             </p>
           </div>
           <div>
             <span class="eyebrow" style="font-size:0.72rem">Gestação / Lactação</span>
             <p style="margin:4px 0 0;font-size:0.88rem;color:var(--text)">
-              ${escapeHtml(latestData.gravidaOuAmamentando || 'Não')}
+              ${escapeHtml(latestData.gestanteLactante || latestData.gravidaOuAmamentando || 'Não se aplica')}
             </p>
           </div>
         </div>
@@ -2201,55 +2265,59 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   `;
 
   // ─── Renderização dos Termos de Consentimento (TCLE) ─────
+  const issuedToken = String(req.query.issued_consent || '');
   const consentCardsHtml = consents.length
     ? consents
         .map((c) => {
           const isSigned = c.status === 'signed';
           const termUrl = `${BASE_URL}/termo/${c.token}`;
-          const msg = `Olá ${patient.full_name}! Por favor, acesse o link a seguir para ler e assinar digitalmente seu Termo de Consentimento para ${c.procedure_name}: ${termUrl}`;
+          const isJustIssued = issuedToken && c.token === issuedToken;
+          const msg = `Olá ${patient.full_name}! Por favor, acesse o link a seguir para ler e assinar digitalmente o seu Termo de Consentimento para ${c.procedure_name}: ${termUrl}`;
           const waLink = toWhatsAppLink(patient.phone, msg);
 
           return `
-            <div class="consent-card">
+            <div class="consent-card" style="${isJustIssued ? 'border: 2px solid var(--accent); background: #fdfbf7;' : ''}">
               <div class="consent-card-header">
                 <div>
                   <h4 class="consent-card-title">${escapeHtml(c.procedure_name)}</h4>
                   <div class="consent-card-meta">
-                    Criado em: ${escapeHtml(formatDateTime(c.created_at))}
+                    Emitido em: ${escapeHtml(formatDateTime(c.created_at))}
                   </div>
                 </div>
                 ${isSigned
                   ? `<span class="badge signed">✅ Assinado</span>`
-                  : `<span class="badge pending">⏳ Aguardando</span>`
+                  : `<span class="badge pending">⏳ Aguardando Assinatura</span>`
                 }
               </div>
 
               <div>
                 ${isSigned ? `
-                  <p style="margin:0 0 6px;font-size:0.82rem;color:#065f46">
+                  <p style="margin:0 0 6px;font-size:0.84rem;color:#166534">
                     Assinado por <strong>${escapeHtml(c.signed_name || patient.full_name)}</strong><br>
-                    em ${escapeHtml(formatDateTime(c.signed_at))}${c.client_ip ? ` · IP: ${escapeHtml(c.client_ip)}` : ''}
+                    Data/Hora: <strong>${escapeHtml(formatDateTime(c.signed_at))}</strong>${c.client_ip ? ` · IP: ${escapeHtml(c.client_ip)}` : ''}
                   </p>
+                  ${c.notes ? `<p style="margin:4px 0 8px;font-size:0.78rem;color:var(--muted);background:var(--bg);padding:6px 10px;border-radius:8px">${escapeHtml(c.notes)}</p>` : ''}
                   ${c.signature_data ? `
-                    <div style="background:#fff;border:1px solid #e0d7ce;border-radius:8px;padding:6px;max-width:240px">
+                    <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px;max-width:240px;margin-top:6px">
                       <img src="${escapeHtml(c.signature_data)}" alt="Assinatura" style="max-width:100%;height:auto;display:block">
                     </div>
                   ` : ''}
                 ` : `
-                  <p style="margin:0 0 8px;font-size:0.82rem;color:var(--muted)">
-                    Aguardando a paciente assinar na tela do celular.
+                  <p style="margin:0 0 8px;font-size:0.83rem;color:var(--muted)">
+                    Link gerado para a paciente assinar no celular ou tablet:
                   </p>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap">
-                    <input type="text" readonly value="${escapeHtml(termUrl)}" id="termInput-${c.id}" style="padding:4px 8px;width:180px;font-size:0.75rem;border-radius:6px;border:1px solid var(--line);background:#fff">
-                    <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('termInput-${c.id}').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar',2000)">Copiar</button>
-                    ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 WhatsApp</a>` : ''}
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                    <input type="text" readonly value="${escapeHtml(termUrl)}" id="termInput-${c.id}" style="padding:6px 8px;width:200px;font-size:0.75rem;border-radius:6px;border:1px solid var(--line);background:#fff">
+                    <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('termInput-${c.id}').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar Link',2000)">Copiar Link</button>
+                    ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>` : ''}
+                    <a class="btn tiny ghost" href="${escapeHtml(termUrl)}" target="_blank" rel="noopener" title="Abrir para assinar presencialmente no consultório">📱 Assinar na Clínica</a>
                   </div>
                 `}
               </div>
 
               <div class="consent-card-actions">
                 <a class="btn tiny gold" href="/admin/consents/${c.id}" target="_blank" rel="noopener">
-                  📄 Visualizar / Imprimir
+                  📄 Visualizar / Imprimir Termo
                 </a>
                 <form method="post" action="/admin/patients/${patient.id}/consents/${c.id}/delete" onsubmit="return confirm('Deseja excluir este termo?')" style="margin:0">
                   <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
@@ -2260,39 +2328,66 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
           `;
         })
         .join('')
-    : '<p class="muted" style="padding:10px 0">Nenhum termo emitido para esta paciente ainda.</p>';
+    : '<p class="muted" style="padding:14px 0">Nenhum termo emitido para esta paciente ainda. Utilize os botões abaixo para emitir o primeiro termo.</p>';
 
   const consentSectionHtml = `
     <section class="panel" id="termos">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
         <div>
-          <h2 style="margin:0">Termos de Consentimento (TCLE)</h2>
+          <div style="display:flex;align-items:center;gap:10px">
+            <h2 style="margin:0">Termos de Consentimento Livre e Esclarecido (TCLE)</h2>
+            <span class="badge" style="background:#e9f2ec;color:var(--accent);font-weight:700">${consents.length} termo(s)</span>
+          </div>
           <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
-            Emita o termo correspondente a cada procedimento para a paciente assinar digitalmente no celular.
+            Emita o termo oficial correspondente a cada procedimento para a paciente assinar no celular. Todos os termos assinados ficam arquivados permanentemente nesta pasta.
           </p>
         </div>
       </div>
 
-      <!-- Botões de Emissão Rápida por Procedimento -->
-      <div style="background:var(--bg-2);padding:14px;border-radius:14px;border:1px solid var(--line);margin-bottom:16px">
-        <p style="margin:0 0 10px;font-weight:700;font-size:0.86rem;color:var(--text);text-transform:uppercase;letter-spacing:0.06em">
-          ✍️ Emitir Novo Termo de Consentimento para ${escapeHtml(patient.full_name)}:
+      ${issuedToken ? `
+        <div class="alert success" style="margin-bottom:16px">
+          ✅ <strong>Termo emitido com sucesso!</strong> Encaminhe pelo botão do WhatsApp ou copie o link exclusivo abaixo para a paciente assinar.
+        </div>
+      ` : ''}
+
+      <!-- Grade de Emissão de Todos os 9 Termos Oficiais -->
+      <div class="tcle-actions-panel">
+        <div class="tcle-actions-title">
+          <span>✍️ Emitir Novo Termo de Consentimento para ${escapeHtml(patient.full_name)}:</span>
+        </div>
+        <p class="muted" style="margin:0 0 14px;font-size:0.84rem">
+          Selecione o procedimento para emitir o termo oficial e encaminhar o link de assinatura para a paciente:
         </p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${consentTemplatesList.map((tpl) => `
-            <form method="post" action="/admin/patients/${patient.id}/consents" style="margin:0">
-              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-              <input type="hidden" name="templateId" value="${tpl.id}">
-              <input type="hidden" name="procedureName" value="${escapeHtml(tpl.procedure_name)}">
-              <button class="btn tiny" type="submit" title="Emitir termo de ${escapeHtml(tpl.procedure_name)}">
-                + ${escapeHtml(tpl.procedure_name.split('(')[0].replace('Aplicação de ', '').replace('Preenchimento Dérmico com ', ''))}
-              </button>
-            </form>
-          `).join('')}
+        <div class="tcle-btn-grid">
+          ${consentTemplatesList.map((tpl) => {
+            const icons = {
+              'toxina-botulinica': '💉',
+              'preenchimento-facial': '✨',
+              'preenchimento-labial': '💋',
+              'bioestimulador-caha': '🌟',
+              'bioestimulador-plla': '🧬',
+              'fios-de-pdo': '🪡',
+              'laser-thulium-lavieen': '⚡',
+              'ultrassom-focado': '🔬',
+              'hialuronidase-off-label': '💧'
+            };
+            const icon = icons[tpl.slug] || '📋';
+            return `
+              <form method="post" action="/admin/patients/${patient.id}/consents" style="margin:0">
+                <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                <input type="hidden" name="templateId" value="${tpl.id}">
+                <input type="hidden" name="procedureName" value="${escapeHtml(tpl.procedure_name)}">
+                <button class="tcle-emit-btn" type="submit" title="Emitir termo de ${escapeHtml(tpl.procedure_name)}">
+                  <span class="icon">${icon}</span>
+                  <span>${escapeHtml(tpl.procedure_name)}</span>
+                </button>
+              </form>
+            `;
+          }).join('')}
         </div>
       </div>
 
-      <div class="consent-cards-grid">
+      <div class="consent-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:14px">
         ${consentCardsHtml}
       </div>
     </section>
@@ -2841,39 +2936,72 @@ app.get('/admin/consents/:id', requireAuth, (req, res) => {
       <meta charset="UTF-8">
       <title>Termo de Consentimento — ${escapeHtml(consent.procedure_name)}</title>
       <style>
-        @page { margin: 20mm; }
-        body { font-family: 'Georgia', serif; color: #2c231e; line-height: 1.6; max-width: 780px; margin: 0 auto; padding: 24px; }
-        h1 { font-size: 1.4rem; color: #ad5f42; border-bottom: 2px solid #ad5f42; padding-bottom: 8px; }
-        .meta-box { background: #fdfaf6; border: 1px solid #dfd2c4; border-radius: 8px; padding: 12px; margin-bottom: 18px; font-size: 0.9rem; }
-        .term-body { white-space: pre-wrap; font-size: 0.95rem; margin: 20px 0; }
-        .signature-stamp { margin-top: 30px; border-top: 2px solid #2c231e; padding-top: 14px; display: inline-block; min-width: 320px; }
-        @media print { .no-print { display: none; } }
+        @page { margin: 15mm 18mm; size: A4; }
+        body { font-family: 'Georgia', serif; color: #18261e; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 24px; background: #fff; }
+        .doc-header { background: #1c3f2d; color: #fff; border-radius: 10px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; border: 1px solid #d4be88; }
+        .doc-header-left { display: flex; align-items: center; gap: 14px; }
+        .doc-logo { width: 48px; height: 48px; object-fit: contain; }
+        .doc-title { margin: 0; font-family: Georgia, serif; font-size: 1.3rem; letter-spacing: 0.08em; color: #e2c275; text-transform: uppercase; font-weight: bold; }
+        .doc-sub { margin: 2px 0 0; font-size: 0.75rem; letter-spacing: 0.1em; color: #f7f5f0; opacity: 0.9; text-transform: uppercase; }
+        .doc-meta-right { text-align: right; font-size: 0.8rem; color: #e2c275; border-left: 1px solid rgba(226, 194, 117, 0.4); padding-left: 14px; }
+        .doc-meta-right strong { color: #fff; }
+        .pill-title { display: inline-block; background: #f4efe7; border: 1px solid #d4be88; color: #1c3f2d; padding: 6px 14px; border-radius: 999px; font-weight: bold; font-size: 0.9rem; margin-bottom: 14px; }
+        .meta-box { background: #fdfbf7; border: 1px solid #ded6ca; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 0.88rem; line-height: 1.6; }
+        .term-body { white-space: pre-wrap; font-size: 0.92rem; line-height: 1.65; margin: 20px 0; color: #232d26; }
+        .signatures-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 30px; align-items: end; page-break-inside: avoid; }
+        .sig-block { border-top: 2px solid #1c3f2d; padding-top: 10px; font-size: 0.86rem; }
+        @media print { .no-print { display: none !important; } body { padding: 0; } }
       </style>
     </head>
     <body>
-      <h1>${escapeHtml(consent.procedure_name)}</h1>
+      <div class="doc-header">
+        <div class="doc-header-left">
+          <img src="/public/logo-fh.png" alt="Dra. Fran Hanel" class="doc-logo">
+          <div>
+            <div class="doc-title">Dra. Fransuele Hanel</div>
+            <div class="doc-sub">Biomedicina Estética Avançada & Integrativa</div>
+          </div>
+        </div>
+        <div class="doc-meta-right">
+          <div>CRBM-5: <strong>015427</strong></div>
+          <div>Prontuário: <strong>#${escapeHtml(toCodeNumber(consent.patient_code))}</strong></div>
+        </div>
+      </div>
+
+      <div class="pill-title">TCLE • ${escapeHtml(consent.procedure_name)}</div>
+
       <div class="meta-box">
         <strong>Paciente:</strong> ${escapeHtml(consent.patient_name)} (${escapeHtml(toCodeNumber(consent.patient_code))})<br>
-        <strong>Telefone:</strong> ${escapeHtml(consent.phone || '-')} · <strong>E-mail:</strong> ${escapeHtml(consent.email || '-')}<br>
+        <strong>Telefone / WhatsApp:</strong> ${escapeHtml(consent.phone || '-')} · <strong>E-mail:</strong> ${escapeHtml(consent.email || '-')}<br>
         <strong>Status:</strong> ${consent.status === 'signed' ? '✅ Assinado digitalmente' : '⏳ Aguardando assinatura da paciente'}<br>
-        ${consent.signed_at ? `<strong>Data/Hora da Assinatura:</strong> ${escapeHtml(new Date(consent.signed_at).toLocaleString('pt-BR'))} · <strong>IP:</strong> ${escapeHtml(consent.client_ip || '-')}` : ''}
+        ${consent.signed_at ? `<strong>Data/Hora da Assinatura:</strong> ${escapeHtml(new Date(consent.signed_at).toLocaleString('pt-BR'))} · <strong>IP do Dispositivo:</strong> ${escapeHtml(consent.client_ip || '-')}` : ''}
+        ${consent.notes ? `<br><strong>${escapeHtml(consent.notes)}</strong>` : ''}
       </div>
 
       <div class="term-body">${escapeHtml(text)}</div>
 
-      ${consent.signature_data ? `
-        <div style="margin-top:24px">
-          <div class="signature-stamp">
-            <img src="${escapeHtml(consent.signature_data)}" alt="Assinatura" style="max-height:80px;display:block;margin-bottom:6px">
-            <strong>${escapeHtml(consent.signed_name || consent.patient_name)}</strong><br>
-            <span style="font-size:0.8rem;color:#666">Assinatura Digital Certificada via Plataforma Fran</span>
-          </div>
+      <div class="signatures-grid">
+        <div class="sig-block">
+          ${consent.signature_data ? `
+            <img src="${escapeHtml(consent.signature_data)}" alt="Assinatura da Paciente" style="max-height:75px;display:block;margin-bottom:6px">
+          ` : '<div style="height:50px"></div>'}
+          <strong>${escapeHtml(consent.signed_name || consent.patient_name)}</strong><br>
+          <span style="font-size:0.78rem;color:#666">Assinatura do(a) Paciente ou Responsável Legal</span>
+          ${consent.signed_at ? `<br><span style="font-size:0.75rem;color:#888">Certificado Digitalmente em ${escapeHtml(new Date(consent.signed_at).toLocaleString('pt-BR'))}</span>` : ''}
         </div>
-      ` : '<p style="color:#92400e;font-style:italic">Termo ainda não assinado pela paciente.</p>'}
 
-      <div class="no-print" style="margin-top:30px;text-align:center">
-        <button onclick="window.print()" style="padding:10px 24px;background:#ad5f42;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer">
-          🖨️ Imprimir / Salvar PDF
+        <div class="sig-block">
+          <div style="height:50px;display:flex;align-items:flex-end">
+            <span style="font-family:'Cinzel',Georgia,serif;color:#1c3f2d;font-weight:bold;font-size:1.05rem">Dra. Fransuele Hanel</span>
+          </div>
+          <strong>Dra. Fransuele Hanel — CRBM-5 015427</strong><br>
+          <span style="font-size:0.78rem;color:#666">Biomedicina Estética Avançada & Integrativa</span>
+        </div>
+      </div>
+
+      <div class="no-print" style="margin-top:34px;text-align:center">
+        <button onclick="window.print()" style="padding:12px 28px;background:#1c3f2d;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:bold;box-shadow:0 4px 14px rgba(28,63,45,0.3)">
+          🖨️ Imprimir / Salvar em PDF
         </button>
       </div>
     </body>
@@ -4427,20 +4555,22 @@ app.get('/admin/submissions/:id/print', requireAuth, (req, res) => {
   const data = JSON.parse(submission.data_json || '{}');
 
   const sectionsHtml = formSections
-    .map((section) => {
+    .map((section, idx) => {
       const rows = section.fields
         .map((field) => {
           const value = data[field.name];
           if (value === undefined || value === null || value === '') {
-            return `<tr><td style="color:#888;font-size:0.85rem">${escapeHtml(field.label)}</td><td style="color:#aaa;font-size:0.85rem">—</td></tr>`;
+            return `<tr><td style="color:#777;font-size:0.84rem;padding:4px 8px 4px 0;width:45%;vertical-align:top;border-bottom:1px solid #ede8e1">${escapeHtml(field.label)}</td><td style="color:#aaa;font-size:0.84rem;padding:4px 0;vertical-align:top;border-bottom:1px solid #ede8e1">—</td></tr>`;
           }
-          return `<tr><td style="font-weight:600;font-size:0.85rem;padding:4px 8px 4px 0;vertical-align:top;border-bottom:1px solid #ede4dc">${escapeHtml(field.label)}</td><td style="font-size:0.85rem;padding:4px 0;vertical-align:top;border-bottom:1px solid #ede4dc">${safeFieldValue(value)}</td></tr>`;
+          return `<tr><td style="font-weight:600;font-size:0.84rem;color:#18261e;padding:5px 8px 5px 0;width:45%;vertical-align:top;border-bottom:1px solid #ede8e1">${escapeHtml(field.label)}</td><td style="font-size:0.84rem;color:#2f3b33;padding:5px 0;vertical-align:top;border-bottom:1px solid #ede8e1">${safeFieldValue(value)}</td></tr>`;
         })
         .join('');
 
       return `
-        <div style="margin-bottom:20px">
-          <h3 style="font-family:Georgia,serif;font-size:1rem;border-bottom:2px solid #ad5f42;padding-bottom:4px;margin:0 0 8px">${escapeHtml(section.title)}</h3>
+        <div style="margin-bottom:22px;page-break-inside:avoid">
+          <h3 style="font-family:'Cinzel',Georgia,serif;font-size:0.95rem;color:#1c3f2d;border-bottom:2px solid #c5a059;padding-bottom:5px;margin:0 0 10px;text-transform:uppercase;letter-spacing:0.04em">
+            ${idx + 1}. ${escapeHtml(section.title)}
+          </h3>
           <table style="width:100%;border-collapse:collapse">${rows}</table>
         </div>
       `;
@@ -4456,29 +4586,82 @@ app.get('/admin/submissions/:id/print', requireAuth, (req, res) => {
     <html lang="pt-BR">
     <head>
       <meta charset="UTF-8">
-      <title>Anamnese ${escapeHtml(patientName)} - ${escapeHtml(code)}</title>
+      <title>Ficha de Anamnese — ${escapeHtml(patientName)} (${escapeHtml(code)})</title>
       <style>
-        @page { margin: 20mm 18mm; }
-        body { font-family: Arial, sans-serif; color: #2f2520; font-size: 13px; margin: 0; }
-        h1 { font-family: Georgia, serif; font-size: 1.4rem; margin: 0 0 4px; }
-        .meta { color: #66564b; font-size: 0.82rem; margin-bottom: 16px; }
-        .no-print { margin-top: 24px; text-align: center; }
-        @media print { .no-print { display: none; } }
+        @page { margin: 15mm 18mm; size: A4; }
+        body { font-family: 'Georgia', serif; color: #18261e; font-size: 13px; line-height: 1.5; margin: 0 auto; max-width: 800px; padding: 24px; background: #fff; }
+        .doc-header { background: #1c3f2d; color: #fff; border-radius: 10px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; border: 1px solid #d4be88; }
+        .doc-header-left { display: flex; align-items: center; gap: 14px; }
+        .doc-logo { width: 48px; height: 48px; object-fit: contain; }
+        .doc-title { margin: 0; font-family: 'Cinzel', Georgia, serif; font-size: 1.25rem; letter-spacing: 0.08em; color: #e2c275; text-transform: uppercase; font-weight: bold; }
+        .doc-sub { margin: 2px 0 0; font-size: 0.75rem; letter-spacing: 0.1em; color: #f7f5f0; opacity: 0.9; text-transform: uppercase; }
+        .doc-meta-right { text-align: right; font-size: 0.8rem; color: #e2c275; border-left: 1px solid rgba(226, 194, 117, 0.4); padding-left: 14px; }
+        .doc-meta-right strong { color: #fff; }
+        .pill-title { display: inline-block; background: #f4efe7; border: 1px solid #d4be88; color: #1c3f2d; padding: 6px 14px; border-radius: 999px; font-weight: bold; font-size: 0.88rem; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .meta-box { background: #fdfbf7; border: 1px solid #ded6ca; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 0.88rem; line-height: 1.6; }
+        .signatures-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 30px; align-items: end; page-break-inside: avoid; }
+        .sig-block { border-top: 2px solid #1c3f2d; padding-top: 10px; font-size: 0.86rem; }
+        .no-print { margin-top: 32px; text-align: center; }
+        @media print { .no-print { display: none !important; } body { padding: 0; } }
       </style>
     </head>
     <body>
-      <h1>Anamnese Clínica — ${escapeHtml(code)} ${escapeHtml(patientName)}</h1>
-      <div class="meta">
-        E-mail: ${escapeHtml(submission.patient_email || data.email || '-')} ·
-        Telefone: ${escapeHtml(submission.patient_phone || data.telefone || '-')} ·
-        Preenchido em: ${escapeHtml(date)}
+      <div class="doc-header">
+        <div class="doc-header-left">
+          <img src="/public/logo-fh.png" alt="Dra. Fran Hanel" class="doc-logo">
+          <div>
+            <div class="doc-title">Dra. Fransuele Hanel</div>
+            <div class="doc-sub">Biomedicina Estética Avançada & Integrativa</div>
+          </div>
+        </div>
+        <div class="doc-meta-right">
+          <div>CRBM-5: <strong>015427</strong></div>
+          <div>Prontuário: <strong>#${escapeHtml(code)}</strong></div>
+        </div>
       </div>
+
+      <div class="pill-title">Ficha Oficial de Anamnese Clínica & Estética</div>
+
+      <div class="meta-box">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div><strong>Paciente:</strong> ${escapeHtml(patientName)}</div>
+          <div><strong>Prontuário:</strong> #${escapeHtml(code)}</div>
+          <div><strong>CPF:</strong> ${escapeHtml(data.cpf || '-')}</div>
+          <div><strong>Nascimento:</strong> ${escapeHtml(data.dataNascimento || '-')}</div>
+          <div><strong>WhatsApp:</strong> ${escapeHtml(submission.patient_phone || data.whatsapp || data.telefone || '-')}</div>
+          <div><strong>E-mail:</strong> ${escapeHtml(submission.patient_email || data.email || '-')}</div>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #dcd3c5;font-size:0.82rem;color:#555">
+          Preenchido e registrado em: <strong>${escapeHtml(date)}</strong>
+        </div>
+      </div>
+
       ${sectionsHtml}
+
+      <div class="signatures-grid">
+        <div class="sig-block">
+          ${submission.signature_data ? `
+            <img src="${escapeHtml(submission.signature_data)}" alt="Assinatura da Paciente" style="max-height:75px;display:block;margin-bottom:6px">
+          ` : '<div style="height:50px"></div>'}
+          <strong>${escapeHtml(data.assinatura || patientName)}</strong><br>
+          <span style="font-size:0.78rem;color:#666">Assinatura do(a) Paciente / Responsável</span>
+          ${data.dataAssinatura ? `<br><span style="font-size:0.75rem;color:#888">Data declarada: ${escapeHtml(data.dataAssinatura)}</span>` : ''}
+        </div>
+
+        <div class="sig-block">
+          <div style="height:50px;display:flex;align-items:flex-end">
+            <span style="font-family:'Cinzel',Georgia,serif;color:#1c3f2d;font-weight:bold;font-size:1.05rem">Dra. Fransuele Hanel</span>
+          </div>
+          <strong>Dra. Fransuele Hanel — CRBM-5 015427</strong><br>
+          <span style="font-size:0.78rem;color:#666">Biomedicina Estética Avançada & Integrativa</span>
+        </div>
+      </div>
+
       <div class="no-print">
-        <button onclick="window.print()" style="padding:10px 24px;background:#ad5f42;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:1rem">
-          Imprimir / Salvar PDF
+        <button onclick="window.print()" style="padding:12px 28px;background:#1c3f2d;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:bold;box-shadow:0 4px 14px rgba(28,63,45,0.3)">
+          🖨️ Imprimir / Salvar em PDF
         </button>
-        <button onclick="window.close()" style="margin-left:12px;padding:10px 24px;background:#eee;color:#333;border:none;border-radius:8px;cursor:pointer;font-size:1rem">
+        <button onclick="window.close()" style="margin-left:12px;padding:12px 24px;background:#eee;color:#333;border:none;border-radius:8px;cursor:pointer;font-size:1rem">
           Fechar
         </button>
       </div>
