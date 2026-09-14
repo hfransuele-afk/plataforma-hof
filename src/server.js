@@ -75,29 +75,34 @@ const upload = multer({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (_req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
-      const safeExt = ext.match(/^\.[a-z0-9]+$/i) ? ext : '.bin';
+      const safeExt = ext.match(/^\.[a-z0-9]+$/i) ? ext : '.jpg';
       cb(null, `${Date.now()}-${crypto.randomUUID()}${safeExt}`);
     }
   }),
   limits: {
-    fileSize: 10 * 1024 * 1024,
-    files: 25
+    fileSize: 100 * 1024 * 1024, // 100 MB por foto/arquivo
+    files: 50
   },
   fileFilter: (_req, file, cb) => {
-    const isImage = file.mimetype && file.mimetype.startsWith('image/');
-    const isPdf = file.mimetype === 'application/pdf';
-    if (isImage || isPdf) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const isImageMime = file.mimetype && (file.mimetype.startsWith('image/') || file.mimetype === 'application/octet-stream');
+    const isPdfMime = file.mimetype === 'application/pdf';
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.gif', '.bmp', '.tiff', '.avif'];
+    const isImageExt = imageExtensions.includes(ext);
+    const isPdfExt = ext === '.pdf';
+
+    if (isImageMime || isPdfMime || isImageExt || isPdfExt) {
       cb(null, true);
       return;
     }
-    cb(new Error('Apenas imagens e PDFs são permitidos nos uploads.'));
+    cb(new Error('Formato de arquivo não suportado. Envie imagens (JPG, PNG, HEIC, WebP, etc.) ou PDF.'));
   }
 });
 
 const uploadPatientFiles = upload.fields([
-  { name: 'facePhotos', maxCount: 8 },
-  { name: 'productPhotos', maxCount: 12 },
-  { name: 'examFiles', maxCount: 5 }
+  { name: 'facePhotos', maxCount: 20 },
+  { name: 'productPhotos', maxCount: 30 },
+  { name: 'examFiles', maxCount: 15 }
 ]);
 
 function setupDatabase() {
@@ -1309,12 +1314,12 @@ app.get('/paciente/:token', (req, res) => {
 
         <label class="field">
           <span>Fotos do rosto (frontal e perfis)</span>
-          <input type="file" name="facePhotos" accept="image/*" multiple>
+          <input type="file" name="facePhotos" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp" multiple>
         </label>
 
         <label class="field">
           <span>Fotos de produtos da rotina ou exames</span>
-          <input type="file" name="productPhotos" accept="image/*,application/pdf" multiple>
+          <input type="file" name="productPhotos" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp,application/pdf" multiple>
         </label>
       </section>
 
@@ -1372,10 +1377,16 @@ app.get('/paciente/:token', (req, res) => {
 app.post('/paciente/:token', (req, res) => {
   uploadPatientFiles(req, res, (uploadError) => {
     if (uploadError) {
+      let errorMsg = uploadError.message;
+      if (uploadError.code === 'LIMIT_FILE_SIZE') {
+        errorMsg = 'Uma ou mais fotos selecionadas ultrapassam o tamanho permitido (limite de 100 MB por imagem).';
+      } else if (uploadError.code === 'LIMIT_FILE_COUNT') {
+        errorMsg = 'Número máximo de fotos por envio excedido.';
+      }
       res.status(400).send(
         layout({
           title: 'Erro no envio',
-          body: `<section class="panel"><h1>Erro no envio</h1><p>${escapeHtml(uploadError.message)}</p></section>`
+          body: `<section class="panel"><h1>Erro no envio</h1><p>${escapeHtml(errorMsg)}</p></section>`
         })
       );
       return;
@@ -2131,13 +2142,14 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       </div>
 
       <!-- Formulário de Upload de Fotos Clínicas -->
-      <div id="uploadMediaBox" style="display:none;background:var(--bg-2);padding:18px;border-radius:14px;border:1px dashed var(--accent);margin-bottom:18px">
-        <form method="post" action="/admin/patients/${patient.id}/media" enctype="multipart/form-data">
+      <div id="uploadMediaBox" style="${req.query.error ? 'display:block;' : 'display:none;'}background:var(--bg-2);padding:18px;border-radius:14px;border:1px dashed var(--accent);margin-bottom:18px">
+        <form id="mediaUploadForm" method="post" action="/admin/patients/${patient.id}/media" enctype="multipart/form-data" onsubmit="return handleMediaUploadSubmit(this)">
           <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
           <div class="form-grid">
             <label class="field">
               <span>Selecionar Fotos (pode marcar várias) *</span>
-              <input type="file" name="mediaFiles" multiple accept="image/*" required>
+              <input type="file" name="mediaFiles" id="mediaFilesInput" multiple accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp" required onchange="handleMediaFilesSelected(this)">
+              <div id="mediaFilesSelectedInfo" style="margin-top:6px;font-size:0.84rem;font-weight:600;color:var(--accent)"></div>
             </label>
             <label class="field">
               <span>Categoria da Imagem *</span>
@@ -2153,8 +2165,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
               <input type="text" name="notes" placeholder="Ex.: Marcação glabela e frontal 42U · Antes preenchimento malar e queixo">
             </label>
           </div>
-          <div style="margin-top:12px;display:flex;gap:8px">
-            <button class="btn primary" type="submit">📤 Salvar Fotos na Pasta</button>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+            <button class="btn primary" id="mediaUploadSubmitBtn" type="submit">📤 Salvar Fotos na Pasta</button>
             <button class="btn ghost" type="button" onclick="document.getElementById('uploadMediaBox').style.display='none'">Cancelar</button>
           </div>
         </form>
@@ -2721,6 +2733,31 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         document.getElementById('lightboxModal').classList.remove('active');
       }
 
+      function handleMediaFilesSelected(input) {
+        const info = document.getElementById('mediaFilesSelectedInfo');
+        if (!info) return;
+        if (!input.files || !input.files.length) {
+          info.textContent = '';
+          return;
+        }
+        let totalBytes = 0;
+        for (let i = 0; i < input.files.length; i++) {
+          totalBytes += input.files[i].size;
+        }
+        const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+        info.textContent = '✅ ' + input.files.length + ' foto(s) selecionada(s) (total: ' + mb + ' MB).';
+      }
+
+      function handleMediaUploadSubmit(form) {
+        const btn = document.getElementById('mediaUploadSubmitBtn');
+        if (btn) {
+          btn.disabled = true;
+          btn.style.opacity = '0.75';
+          btn.innerHTML = '⏳ Enviando fotos... por favor aguarde...';
+        }
+        return true;
+      }
+
       function formatMoney(val) {
         return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
@@ -2828,9 +2865,15 @@ app.post('/admin/patients/:id/evolutions/:evoId/delete', requireAuth, (req, res)
 
 // ─── ROTAS DA GALERIA DE FOTOS (MARCAÇÕES, ANTES & DEPOIS) ──
 app.post('/admin/patients/:id/media', requireAuth, (req, res) => {
-  upload.array('mediaFiles', 15)(req, res, (err) => {
+  upload.array('mediaFiles', 50)(req, res, (err) => {
     if (err) {
-      res.redirect(`/admin/patients/${req.params.id}?error=${encodeURIComponent(err.message)}#galeria`);
+      let errorMsg = err.message;
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        errorMsg = 'Uma ou mais fotos ultrapassam o tamanho permitido (limite de 100 MB por imagem).';
+      } else if (err.code === 'LIMIT_FILE_COUNT') {
+        errorMsg = 'Número máximo de fotos por envio excedido (limite de 50 fotos por vez).';
+      }
+      res.redirect(`/admin/patients/${req.params.id}?error=${encodeURIComponent(errorMsg)}#galeria`);
       return;
     }
     if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
@@ -2852,12 +2895,12 @@ app.post('/admin/patients/:id/media', requireAuth, (req, res) => {
 
     const tx = db.transaction(() => {
       for (const file of files) {
-        insertMedia.run(patientId, category, file.originalname, file.filename, file.mimetype, notes, nowIso());
+        insertMedia.run(patientId, category, file.originalname, file.filename, file.mimetype || null, notes, nowIso());
       }
     });
     tx();
 
-    res.redirect(`/admin/patients/${patientId}?uploaded_media=1#galeria`);
+    res.redirect(`/admin/patients/${patientId}?uploaded_media=${files.length}#galeria`);
   });
 });
 
@@ -2867,7 +2910,21 @@ app.get('/admin/media/:id', requireAuth, (req, res) => {
   if (!item) { res.status(404).send('Imagem não encontrada.'); return; }
   const absPath = path.join(uploadDir, item.stored_name);
   if (!fs.existsSync(absPath)) { res.status(404).send('Arquivo não encontrado no disco.'); return; }
-  if (item.mime_type) res.setHeader('Content-Type', item.mime_type);
+
+  const ext = path.extname(item.stored_name).toLowerCase();
+  const mimeMap = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.pdf': 'application/pdf'
+  };
+  const mime = (item.mime_type && item.mime_type !== 'application/octet-stream') ? item.mime_type : (mimeMap[ext] || 'image/jpeg');
+  res.setHeader('Content-Type', mime);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
   res.sendFile(absPath);
 });
 
@@ -3801,11 +3858,11 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
         <label class="field">
           <span>Novas fotos do rosto</span>
-          <input type="file" name="facePhotos" accept="image/*" multiple>
+          <input type="file" name="facePhotos" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp" multiple>
         </label>
         <label class="field">
-          <span>Novas fotos de produtos</span>
-          <input type="file" name="productPhotos" accept="image/*" multiple>
+          <span>Novas fotos de produtos ou exames</span>
+          <input type="file" name="productPhotos" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp,application/pdf" multiple>
         </label>
         <button class="btn primary" type="submit">Adicionar fotos</button>
       </form>
@@ -3833,7 +3890,13 @@ app.post('/admin/submissions/:id/files', requireAuth, (req, res) => {
     const submissionId = Number(req.params.id);
 
     if (uploadError) {
-      res.redirect(`/admin/submissions/${submissionId}?uploadError=${encodeURIComponent(uploadError.message)}`);
+      let errorMsg = uploadError.message;
+      if (uploadError.code === 'LIMIT_FILE_SIZE') {
+        errorMsg = 'Uma ou mais fotos ultrapassam o tamanho permitido (limite de 100 MB por imagem).';
+      } else if (uploadError.code === 'LIMIT_FILE_COUNT') {
+        errorMsg = 'Número máximo de fotos por envio excedido.';
+      }
+      res.redirect(`/admin/submissions/${submissionId}?uploadError=${encodeURIComponent(errorMsg)}`);
       return;
     }
 
@@ -3888,10 +3951,20 @@ app.get('/admin/file/:id', requireAuth, (req, res) => {
     return;
   }
 
-  if (file.mime_type) {
-    res.setHeader('Content-Type', file.mime_type);
-  }
-
+  const ext = path.extname(file.stored_name).toLowerCase();
+  const mimeMap = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.pdf': 'application/pdf'
+  };
+  const mime = (file.mime_type && file.mime_type !== 'application/octet-stream') ? file.mime_type : (mimeMap[ext] || 'image/jpeg');
+  res.setHeader('Content-Type', mime);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
   res.sendFile(absPath);
 });
 
