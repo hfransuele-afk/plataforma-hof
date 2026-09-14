@@ -952,9 +952,12 @@ app.post('/login', (req, res) => {
 
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
+  const trimmedPassword = password.trim();
 
-  const admin = db.prepare('SELECT * FROM admins WHERE email = ?').get(email);
-  if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+  const admin = db.prepare('SELECT * FROM admins WHERE LOWER(email) = ?').get(email);
+  const isValid = admin && (bcrypt.compareSync(password, admin.password_hash) || bcrypt.compareSync(trimmedPassword, admin.password_hash));
+  if (!isValid) {
+    console.warn(`[AUTH] Tentativa de login inválida para: "${email}"`);
     res.redirect('/login?error=Credenciais inválidas');
     return;
   }
