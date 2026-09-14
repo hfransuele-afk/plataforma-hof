@@ -1892,3 +1892,213 @@ th {
   color: #854d0e;
   border: 1px solid #fef08a;
 }
+
+/* ─── Simulador de Parcelamento & Insumos Avançado ──────────────── */
+.sim-grid-layout {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .sim-grid-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.materials-category-header {
+  font-family: 'Cinzel', Georgia, serif;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: #f4efe7;
+  padding: 6px 12px;
+  border-radius: 6px;
+  margin: 10px 0 6px;
+  border-left: 3px solid var(--gold);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.materials-picker-container {
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #ffffff;
+}
+
+.material-item-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid #ede8e1;
+  transition: all 0.15s ease;
+}
+
+.material-item-row:hover {
+  border-color: var(--gold-border);
+  background: #fbf9f5;
+}
+
+.material-item-row.active {
+  border-color: var(--accent);
+  background: #f0f7f2;
+}
+
+.material-item-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.material-item-price {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.material-qty-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mat-qty-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--accent);
+  font-weight: bold;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.mat-qty-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mat-qty-input {
+  width: 52px;
+  padding: 4px 6px;
+  font-size: 0.85rem;
+  text-align: center;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.material-item-total {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 75px;
+  text-align: right;
+}
+
+.step-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #ede8e1;
+  margin-bottom: 8px;
+}
+
+.step-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: bold;
+  font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.step-info {
+  flex: 1;
+}
+
+.step-info-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.step-info-sub {
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.sim-installments-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 10px;
+}
+
+.sim-installments-table th {
+  background: #f4efe7;
+  color: var(--accent);
+  padding: 8px 10px;
+  text-align: left;
+  font-family: 'Cinzel', Georgia, serif;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.sim-installments-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #ede8e1;
+}
+
+.sim-installments-table tr:hover td {
+  background: #fdfbf7;
+}
+
+.sim-installments-table tr.selected td {
+  background: #eef7f1;
+  font-weight: 600;
+}
+
+.whatsapp-copy-box {
+  background: #fdfbf7;
+  border: 1px dashed var(--gold-border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 16px;
+  font-family: monospace;
+  font-size: 0.84rem;
+  white-space: pre-wrap;
+  color: #2f2520;
+}
+

@@ -10,6 +10,7 @@ const path = require('path');
 
 const { formSections, fieldLabels } = require('./formSchema');
 const { consentTemplates } = require('./consentTemplates');
+const { defaultMaterials, defaultCardRates } = require('./materialCatalog');
 
 dotenv.config();
 
@@ -383,25 +384,87 @@ function ensureNewClinicalAndFinancialTables() {
     }
   }
 
-  const countMaterials = db.prepare('SELECT count(*) as c FROM material_costs').get().c;
-  if (countMaterials === 0) {
-    const defaultMaterials = [
-      { name: 'Toxina Botulínica 100U (Frasco)', unit_type: 'Frasco', cost_per_unit: 850.0 },
-      { name: 'Toxina Botulínica (por Unidade)', unit_type: 'Unidade (U)', cost_per_unit: 9.50 },
-      { name: 'Ácido Hialurônico 1ml (Seringa)', unit_type: 'Seringa 1ml', cost_per_unit: 420.0 },
-      { name: 'Bioestimulador de Colágeno (Frasco)', unit_type: 'Frasco', cost_per_unit: 980.0 },
-      { name: 'Kit Descartável (Luvas, Gaze, Agulha, Anestésico)', unit_type: 'Kit', cost_per_unit: 35.0 },
-      { name: 'Microcânula Estéril', unit_type: 'Unidade', cost_per_unit: 25.0 },
-      { name: 'Fio de PDO Espiculado (unidade)', unit_type: 'Unidade', cost_per_unit: 65.0 },
-      { name: 'Fio de PDO Liso (unidade)', unit_type: 'Unidade', cost_per_unit: 18.0 },
-      { name: 'Dose Peeling Químico', unit_type: 'Dose', cost_per_unit: 45.0 },
-      { name: 'Cartucho Microagulhamento', unit_type: 'Unidade', cost_per_unit: 30.0 }
-    ];
-    const insertMat = db.prepare(
-      'INSERT INTO material_costs (name, unit_type, cost_per_unit, is_active, created_at) VALUES (?, ?, ?, 1, ?)'
+  // Ensure schema updates for material_costs
+  const mcCols = db.pragma('table_info(material_costs)');
+  if (!mcCols.some((c) => c.name === 'category')) {
+    db.exec("ALTER TABLE material_costs ADD COLUMN category TEXT DEFAULT 'Geral'");
+  }
+  if (!mcCols.some((c) => c.name === 'quick_step')) {
+    db.exec("ALTER TABLE material_costs ADD COLUMN quick_step REAL DEFAULT 1");
+  }
+
+  // Ensure card_fee_rates table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_fee_rates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      method_code TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      installments INTEGER NOT NULL DEFAULT 1,
+      fee_pct REAL NOT NULL DEFAULT 0.0,
+      updated_at TEXT NOT NULL
     );
+  `);
+
+  if (defaultCardRates && defaultCardRates.length) {
+    const upsertCardRate = db.prepare(`
+      INSERT INTO card_fee_rates (method_code, label, installments, fee_pct, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(method_code) DO UPDATE SET
+        label = excluded.label,
+        installments = excluded.installments
+    `);
+    for (const r of defaultCardRates) {
+      upsertCardRate.run(r.method_code, r.label, r.installments, r.fee_pct, nowIso());
+    }
+  }
+
+  // Ensure procedure_financials extra columns
+  const pfCols = db.pragma('table_info(procedure_financials)');
+  if (!pfCols.some((c) => c.name === 'payment_method')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN payment_method TEXT DEFAULT 'pix'");
+  }
+  if (!pfCols.some((c) => c.name === 'installments')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN installments INTEGER DEFAULT 1");
+  }
+  if (!pfCols.some((c) => c.name === 'value_after_card')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN value_after_card REAL DEFAULT 0");
+  }
+  if (!pfCols.some((c) => c.name === 'value_after_tax')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN value_after_tax REAL DEFAULT 0");
+  }
+  if (!pfCols.some((c) => c.name === 'professional_subtotal')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN professional_subtotal REAL DEFAULT 0");
+  }
+
+  // Seed / Update official clinic materials from materialCatalog
+  if (defaultMaterials && defaultMaterials.length) {
+    const checkMat = db.prepare('SELECT id FROM material_costs WHERE name = ?');
+    const updateMat = db.prepare(`
+      UPDATE material_costs 
+      SET category = ?, unit_type = ?, cost_per_unit = ?, quick_step = ?, is_active = 1
+      WHERE id = ?
+    `);
+    const insertMat = db.prepare(`
+      INSERT INTO material_costs (name, category, unit_type, cost_per_unit, quick_step, is_active, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?)
+    `);
+
+    const officialNames = defaultMaterials.map((m) => m.name);
     for (const m of defaultMaterials) {
-      insertMat.run(m.name, m.unit_type, m.cost_per_unit, nowIso());
+      const existing = checkMat.get(m.name);
+      if (existing) {
+        updateMat.run(m.category, m.unit_type, m.cost_per_unit, m.quick_step || 1, existing.id);
+      } else {
+        insertMat.run(m.name, m.category, m.unit_type, m.cost_per_unit, m.quick_step || 1, nowIso());
+      }
+    }
+
+    // Inactivate legacy non-matching materials
+    const currentRows = db.prepare('SELECT id, name FROM material_costs').all();
+    for (const cur of currentRows) {
+      if (!officialNames.includes(cur.name)) {
+        db.prepare('UPDATE material_costs SET is_active = 0 WHERE id = ?').run(cur.id);
+      }
     }
   }
 
@@ -411,6 +474,177 @@ function ensureNewClinicalAndFinancialTables() {
       'INSERT INTO clinic_settings (default_tax_pct, default_card_fee_pct, default_clinic_split_pct, updated_at) VALUES (?, ?, ?, ?)'
     ).run(6.0, 3.5, 30.0, nowIso());
   }
+}
+
+/**
+ * Regra oficial de cálculo sequencial do Lucro Líquido (Dra. Fran Hanel)
+ * 1. Valor total pago pela paciente
+ * 2. (-) Taxa do cartão de acordo com o parcelamento
+ * 3. (-) 6% de imposto sobre o valor após cartão
+ * 4. (-) 30% da clínica sobre o valor após imposto
+ * 5. (-) Custo dos materiais e tecnologias utilizados
+ * 6. (=) Lucro Líquido final da Fran
+ */
+function calculateProcedureProfit({
+  grossValue = 0,
+  cardFeePct = 0,
+  taxPct = 6.0,
+  clinicSplitPct = 30.0,
+  materialsCost = 0
+}) {
+  const gross = Math.max(0, parseFloat(grossValue) || 0);
+  const cardPct = Math.max(0, parseFloat(cardFeePct) || 0);
+  const taxP = Math.max(0, parseFloat(taxPct) || 0);
+  const clinicP = Math.max(0, parseFloat(clinicSplitPct) || 0);
+  const matCost = Math.max(0, parseFloat(materialsCost) || 0);
+
+  // 1. Taxa do cartão sobre o valor total pago
+  const cardFeeAmount = gross * (cardPct / 100);
+  const valueAfterCard = gross - cardFeeAmount;
+
+  // 2. Imposto de 6% sobre o valor após taxa do cartão
+  const taxAmount = valueAfterCard * (taxP / 100);
+  const valueAfterTax = valueAfterCard - taxAmount;
+
+  // 3. Repasse da clínica (30%) sobre o valor após imposto
+  const clinicSplitAmount = valueAfterTax * (clinicP / 100);
+  const professionalSubtotal = valueAfterTax - clinicSplitAmount;
+
+  // 4. Subtrair custo dos insumos e tecnologias utilizadas
+  const netProfit = professionalSubtotal - matCost;
+
+  return {
+    grossValue: gross,
+    cardFeePct: cardPct,
+    cardFeeAmount,
+    valueAfterCard,
+    taxPct: taxP,
+    taxAmount,
+    valueAfterTax,
+    clinicSplitPct: clinicP,
+    clinicSplitAmount,
+    professionalSubtotal,
+    materialsCost: matCost,
+    netProfit
+  };
+}
+
+function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 'recalcProfit' }) {
+  const categoryOrder = [
+    'Tecnologia',
+    'Toxina Botulínica',
+    'Preenchedor',
+    'Bioestimulador',
+    'Fios PDO',
+    'Cânulas e Insumos',
+    'Procedimento / Sessão'
+  ];
+
+  const grouped = {};
+  for (const m of materials) {
+    const cat = m.category || 'Geral';
+    if (!grouped[cat]) grouped[cat] = [];
+    grouped[cat].push(m);
+  }
+
+  const sortedCats = Object.keys(grouped).sort((a, b) => {
+    const ia = categoryOrder.indexOf(a);
+    const ib = categoryOrder.indexOf(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  return sortedCats.map((cat) => {
+    const items = grouped[cat];
+    const itemsHtml = items.map((m) => {
+      const step = m.quick_step || (m.unit_type === 'Disparo' ? 50 : 1);
+      const isTech = cat === 'Tecnologia';
+      return `
+        <div class="material-item-row" id="${prefix}_row_${m.id}">
+          <label class="material-item-name" style="cursor:pointer;margin:0">
+            <input type="checkbox" class="${prefix}-mat-checkbox" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" data-step="${step}" onchange="${prefix}OnCheckChange(${m.id}); ${onchangeFn}()">
+            <div>
+              <span>${escapeHtml(m.name)}</span>
+              <div class="material-item-price">
+                ${escapeHtml(m.unit_type)} · <strong>R$ ${escapeHtml(formatBRL(m.cost_per_unit))}</strong>
+                ${isTech && m.unit_type === 'Disparo' ? '<span class="badge" style="background:#fef3c7;color:#92400e;margin-left:4px">Microfocado (R$ 1,60/disp)</span>' : ''}
+                ${isTech && m.unit_type === 'Sessão' ? '<span class="badge" style="background:#e0f2fe;color:#0369a1;margin-left:4px">Laser Thulium (Fixo R$ 200)</span>' : ''}
+              </div>
+            </div>
+          </label>
+          <div class="material-qty-wrap">
+            <button type="button" class="mat-qty-btn" onclick="${prefix}AdjustQty(${m.id}, -${step}); ${onchangeFn}()" title="Diminuir">-</button>
+            <input type="number" min="0" step="${step}" value="0" class="${prefix}-mat-qty mat-qty-input" data-id="${m.id}" data-cost="${m.cost_per_unit}" data-step="${step}" oninput="${prefix}OnQtyInput(${m.id}); ${onchangeFn}()" title="Quantidade">
+            <button type="button" class="mat-qty-btn" onclick="${prefix}AdjustQty(${m.id}, ${step}); ${onchangeFn}()" title="Aumentar">+</button>
+          </div>
+          <div class="material-item-total" id="${prefix}_total_${m.id}">
+            R$ 0,00
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="materials-category-block" style="margin-bottom:12px">
+        <div class="materials-category-header">
+          <span>${escapeHtml(cat)}</span>
+          <span style="font-size:0.75rem;font-weight:normal;opacity:0.8">${items.length} itens</span>
+        </div>
+        ${itemsHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderMaterialsPickerScript(prefix, onchangeFn) {
+  return `
+    function ${prefix}AdjustQty(id, delta) {
+      var input = document.querySelector('.${prefix}-mat-qty[data-id="' + id + '"]');
+      if (!input) return;
+      var cur = parseFloat(input.value) || 0;
+      var next = Math.max(0, cur + delta);
+      input.value = next;
+      ${prefix}OnQtyInput(id);
+      if (typeof ${onchangeFn} === 'function') ${onchangeFn}();
+    }
+
+    function ${prefix}OnQtyInput(id) {
+      var input = document.querySelector('.${prefix}-mat-qty[data-id="' + id + '"]');
+      var cb = document.querySelector('.${prefix}-mat-checkbox[data-id="' + id + '"]');
+      var row = document.getElementById('${prefix}_row_' + id);
+      var totalElem = document.getElementById('${prefix}_total_' + id);
+      if (!input) return;
+      var qty = parseFloat(input.value) || 0;
+      var cost = parseFloat(input.dataset.cost) || 0;
+      var total = qty * cost;
+      if (totalElem) totalElem.textContent = 'R$ ' + (total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      if (qty > 0) {
+        if (cb) cb.checked = true;
+        if (row) row.classList.add('active');
+      } else {
+        if (cb) cb.checked = false;
+        if (row) row.classList.remove('active');
+      }
+    }
+
+    function ${prefix}OnCheckChange(id) {
+      var cb = document.querySelector('.${prefix}-mat-checkbox[data-id="' + id + '"]');
+      var input = document.querySelector('.${prefix}-mat-qty[data-id="' + id + '"]');
+      if (!cb || !input) return;
+      var step = parseFloat(input.dataset.step) || 1;
+      if (cb.checked) {
+        if ((parseFloat(input.value) || 0) <= 0) {
+          input.value = step;
+        }
+      } else {
+        input.value = 0;
+      }
+      ${prefix}OnQtyInput(id);
+    }
+  `;
 }
 
 function migratePatientNotesToEvolutions() {
@@ -845,6 +1079,7 @@ function layout({ title, body, userEmail = null, activeNav = '' }) {
         <div class="top-nav-links">
           <a class="top-nav-item ${activeNav === 'agenda' ? 'active' : ''}" href="/admin/agenda">📅 Agenda</a>
           <a class="top-nav-item ${activeNav === 'patients' ? 'active' : ''}" href="/admin/patients">👥 Pacientes</a>
+          <a class="top-nav-item ${activeNav === 'simulador' ? 'active' : ''}" href="/admin/simulador">🧮 Simulador</a>
           <a class="top-nav-item ${activeNav === 'submissions' ? 'active' : ''}" href="/admin">📋 Questionários</a>
           <a class="top-nav-item ${activeNav === 'financeiro' ? 'active' : ''}" href="/admin/financeiro">💰 Financeiro</a>
           <a class="top-nav-item ${activeNav === 'materiais' ? 'active' : ''}" href="/admin/materiais">🧪 Insumos</a>
@@ -1905,7 +2140,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     .all(patientId);
 
   // Insumos ativos e configurações da clínica para calculadora
-  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY name ASC').all();
+  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY category ASC, name ASC').all();
+  const cardRates = db.prepare('SELECT * FROM card_fee_rates ORDER BY installments ASC, id ASC').all();
   const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
     default_tax_pct: 6.0,
     default_card_fee_pct: 3.5,
@@ -2407,14 +2643,21 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
 
   // ─── Renderização da Calculadora de Custos & Lucro Líquido ─
   const financialRowsHtml = financials.length
-    ? financials.map((f) => `
+    ? financials.map((f) => {
+        const payLabel = f.payment_method ? f.payment_method.toUpperCase().replace('_', ' ') : 'PIX';
+        const instLabel = f.installments && f.installments > 1 ? ` (${f.installments}x)` : '';
+        return `
         <tr>
           <td>${escapeHtml(formatDateTime(f.created_at))}</td>
-          <td><strong>${escapeHtml(f.description)}</strong></td>
-          <td>R$ ${escapeHtml(formatBRL(f.gross_value))}</td>
+          <td>
+            <strong>${escapeHtml(f.description)}</strong>
+            <div style="font-size:0.75rem;color:var(--muted)">${escapeHtml(payLabel + instLabel)}</div>
+          </td>
+          <td><strong>R$ ${escapeHtml(formatBRL(f.gross_value))}</strong></td>
           <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(f.materials_cost))}</td>
-          <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(f.tax_amount + f.card_fee_amount))}</td>
-          <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(f.clinic_split_amount))}</td>
+          <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(f.card_fee_amount))} (${f.card_fee_pct}%)</td>
+          <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(f.tax_amount))} (6%)</td>
+          <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(f.clinic_split_amount))} (30%)</td>
           <td style="color:#15803d;font-weight:700">R$ ${escapeHtml(formatBRL(f.net_profit))}</td>
           <td>
             <form method="post" action="/admin/patients/${patient.id}/financial/${f.id}/delete" onsubmit="return confirm('Excluir este registro financeiro?')" style="margin:0">
@@ -2423,8 +2666,9 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             </form>
           </td>
         </tr>
-      `).join('')
-    : '<tr><td colspan="8" class="muted">Nenhum cálculo registrado para esta paciente ainda.</td></tr>';
+      `;
+      }).join('')
+    : '<tr><td colspan="9" class="muted">Nenhum cálculo registrado para esta paciente ainda.</td></tr>';
 
   const financialSectionHtml = `
     <section class="panel" id="financeiro">
@@ -2432,7 +2676,7 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         <div>
           <h2 style="margin:0">Custos, Repasses & Lucro Líquido do Procedimento</h2>
           <p class="muted" style="margin:4px 0 0;font-size:0.84rem">
-            Informe o valor cobrado e selecione os materiais utilizados para calcular em tempo real os repasses e o lucro líquido da Fran.
+            Cálculo oficial sequencial: Valor Cobrado → (-) Cartão → (-) 6% Imposto → (-) 30% Clínica → (-) Materiais = Lucro Fran.
           </p>
         </div>
       </div>
@@ -2464,35 +2708,47 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
               </label>
             </div>
 
-            <!-- Seleção de Materiais do Catálogo -->
+            <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px">
+              <label class="field">
+                <span>Forma de Pagamento da Paciente *</span>
+                <select name="payment_method" id="calcPaymentMethod" onchange="onPaymentMethodChange()">
+                  ${cardRates.map((r) => `
+                    <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" ${r.method_code === 'pix' ? 'selected' : ''}>
+                      ${escapeHtml(r.label)} (${r.fee_pct > 0 ? r.fee_pct + '%' : 'Sem taxa'})
+                    </option>
+                  `).join('')}
+                </select>
+              </label>
+              <label class="field">
+                <span>Parcelamento</span>
+                <input type="number" name="installments" id="calcInstallments" value="1" min="1" max="12" readonly style="background:#f8f6f2">
+              </label>
+            </div>
+
+            <!-- Seleção de Materiais Agrupados por Categoria -->
             <label class="field">
-              <span>Insumos e Materiais Utilizados</span>
-              <div class="materials-picker-grid">
-                ${materials.map((m) => `
-                  <div class="material-item-check">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
-                      <input type="checkbox" class="mat-checkbox" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" onchange="recalcProfit()">
-                      <span>${escapeHtml(m.name)} <strong style="color:var(--accent);font-size:0.75rem">(R$ ${escapeHtml(formatBRL(m.cost_per_unit))})</strong></span>
-                    </label>
-                    <input type="number" min="1" value="1" class="mat-qty" data-id="${m.id}" oninput="recalcProfit()" style="width:44px" title="Quantidade">
-                  </div>
-                `).join('')}
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <span>Insumos, Materiais & Tecnologias Utilizados</span>
+                <span class="muted" style="font-size:0.78rem">Selecione e ajuste as quantidades</span>
+              </div>
+              <div class="materials-picker-container">
+                ${renderMaterialsPickerHtml({ materials, prefix: 'calc', onchangeFn: 'recalcProfit' })}
               </div>
             </label>
 
             <!-- Taxas configuradas -->
             <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-top:10px">
               <label class="field">
-                <span>Imposto (%)</span>
-                <input type="number" step="0.1" name="tax_pct" id="calcTaxPct" value="${clinicSettings.default_tax_pct || 6}" oninput="recalcProfit()">
+                <span>Taxa Cartão (%)</span>
+                <input type="number" step="0.01" name="card_fee_pct" id="calcCardFeePct" value="0.00" oninput="recalcProfit()">
               </label>
               <label class="field">
-                <span>Taxa Cartão (%)</span>
-                <input type="number" step="0.1" name="card_fee_pct" id="calcCardFeePct" value="${clinicSettings.default_card_fee_pct || 3.5}" oninput="recalcProfit()">
+                <span>Imposto (%)</span>
+                <input type="number" step="0.1" name="tax_pct" id="calcTaxPct" value="${clinicSettings.default_tax_pct || 6.0}" oninput="recalcProfit()">
               </label>
               <label class="field">
                 <span>Repasse Clínica (%)</span>
-                <input type="number" step="0.1" name="clinic_split_pct" id="calcClinicSplitPct" value="${clinicSettings.default_clinic_split_pct || 30}" oninput="recalcProfit()">
+                <input type="number" step="0.1" name="clinic_split_pct" id="calcClinicSplitPct" value="${clinicSettings.default_clinic_split_pct || 30.0}" oninput="recalcProfit()">
               </label>
             </div>
 
@@ -2502,42 +2758,75 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
           </form>
         </div>
 
-        <!-- Recibo em Tempo Real -->
+        <!-- Recibo em Tempo Real (6 Passos Oficiais) -->
         <div class="calc-receipt-card">
-          <h3 class="calc-receipt-title">Extrato de Rentabilidade</h3>
+          <h3 class="calc-receipt-title">Extrato de Rentabilidade (6 Passos)</h3>
 
-          <div class="receipt-row">
-            <span>Faturamento Bruto</span>
-            <strong id="liveGross">R$ 0,00</strong>
+          <div class="step-card">
+            <div class="step-badge">1</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>Faturamento Cobrado</span>
+                <strong id="liveGross">R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="liveInstallmentLabel">À vista (Pix)</div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Custo Total de Insumos</span>
-            <strong id="liveMaterials">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #f59e0b">
+            <div class="step-badge" style="background:#f59e0b">2</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Taxa Cartão (<span id="liveCardPct">0.00</span>%)</span>
+                <strong style="color:var(--danger)" id="liveCardFee">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após taxa: <strong id="liveAfterCard" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Imposto (<span id="liveTaxPct">6</span>%)</span>
-            <strong id="liveTax">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #3b82f6">
+            <div class="step-badge" style="background:#3b82f6">3</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Imposto (<span id="liveTaxPct">6.0</span>% pós-cartão)</span>
+                <strong style="color:var(--danger)" id="liveTax">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após imposto: <strong id="liveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Taxa de Cartão (<span id="liveCardPct">3.5</span>%)</span>
-            <strong id="liveCardFee">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #8b5cf6">
+            <div class="step-badge" style="background:#8b5cf6">4</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Repasse Clínica (<span id="liveClinicPct">30.0</span>% pós-imposto)</span>
+                <strong style="color:#9a3412" id="liveClinicSplit">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Cota Profissional Fran: <strong id="liveProfSubtotal" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Repasse da Clínica (<span id="liveClinicPct">30</span>%)</span>
-            <strong id="liveClinicSplit">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #ef4444">
+            <div class="step-badge" style="background:#ef4444">5</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Custo Insumos & Tecnologias</span>
+                <strong style="color:var(--danger)" id="liveMaterials">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="liveMaterialsCount">0 itens selecionados</div>
+            </div>
           </div>
 
-          <div class="receipt-total-profit">
-            <span>LUCRO LÍQUIDO FRAN</span>
-            <span class="profit-badge" id="liveNetProfit">R$ 0,00</span>
+          <div class="receipt-total-profit" style="margin-top:12px">
+            <div>
+              <div style="font-size:0.75rem;letter-spacing:0.05em;text-transform:uppercase;opacity:0.9">6. LUCRO LÍQUIDO FINAL FRAN</div>
+              <div style="font-size:0.8rem;font-weight:normal;opacity:0.9" id="liveMarginPct">Margem: 0%</div>
+            </div>
+            <span class="profit-badge" id="liveNetProfit" style="font-size:1.45rem">R$ 0,00</span>
           </div>
 
-          <p class="muted" style="font-size:0.75rem;margin-top:12px;text-align:center">
-            * O cálculo de repasse da clínica aplica a porcentagem sobre o valor bruto do procedimento.
+          <p class="muted" style="font-size:0.74rem;margin-top:12px;text-align:center">
+            * Ordem oficial: 1. Bruto → 2. (-) Cartão → 3. (-) 6% Imposto → 4. (-) 30% Clínica → 5. (-) Insumos = 6. Lucro Líquido.
           </p>
         </div>
       </div>
@@ -2550,11 +2839,12 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             <thead>
               <tr>
                 <th>Data</th>
-                <th>Procedimento</th>
+                <th>Procedimento / Pgto</th>
                 <th>Valor Bruto</th>
                 <th>Insumos</th>
-                <th>Impostos + Cartão</th>
-                <th>Repasse Clínica</th>
+                <th>Taxa Cartão</th>
+                <th>Imposto 6%</th>
+                <th>Repasse Clínica 30%</th>
                 <th>Lucro Líquido</th>
                 <th>Ação</th>
               </tr>
@@ -2762,54 +3052,139 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
 
+      ${renderMaterialsPickerScript('calc', 'recalcProfit')}
+
+      function onPaymentMethodChange() {
+        var sel = document.getElementById('calcPaymentMethod');
+        if (!sel) return;
+        var opt = sel.options[sel.selectedIndex];
+        var fee = parseFloat(opt.dataset.fee) || 0;
+        var inst = parseInt(opt.dataset.installments) || 1;
+        var feeInput = document.getElementById('calcCardFeePct');
+        if (feeInput) feeInput.value = fee.toFixed(2);
+        var instInput = document.getElementById('calcInstallments');
+        if (instInput) instInput.value = inst;
+        recalcProfit();
+      }
+
       function recalcProfit() {
-        const gross = parseFloat(document.getElementById('calcGrossValue').value) || 0;
-        const extraMat = parseFloat(document.getElementById('calcExtraMaterials').value) || 0;
-        const taxPct = parseFloat(document.getElementById('calcTaxPct').value) || 0;
-        const cardPct = parseFloat(document.getElementById('calcCardFeePct').value) || 0;
-        const clinicPct = parseFloat(document.getElementById('calcClinicSplitPct').value) || 0;
+        var gross = parseFloat(document.getElementById('calcGrossValue').value) || 0;
+        var extraMat = parseFloat(document.getElementById('calcExtraMaterials').value) || 0;
+        var taxPct = parseFloat(document.getElementById('calcTaxPct').value) || 0;
+        var cardPct = parseFloat(document.getElementById('calcCardFeePct').value) || 0;
+        var clinicPct = parseFloat(document.getElementById('calcClinicSplitPct').value) || 0;
 
         // Soma materiais selecionados
-        let catalogMatCost = 0;
-        const selectedMaterials = [];
-        document.querySelectorAll('.mat-checkbox:checked').forEach(cb => {
-          const id = cb.dataset.id;
-          const cost = parseFloat(cb.dataset.cost) || 0;
-          const name = cb.dataset.name;
-          const qtyInput = document.querySelector('.mat-qty[data-id="' + id + '"]');
-          const qty = qtyInput ? (parseInt(qtyInput.value) || 1) : 1;
-          const totalItemCost = cost * qty;
-          catalogMatCost += totalItemCost;
-          selectedMaterials.push({ id, name, cost, qty, total: totalItemCost });
+        var catalogMatCost = 0;
+        var selectedCount = 0;
+        var selectedMaterials = [];
+        document.querySelectorAll('.calc-mat-qty').forEach(function(input) {
+          var qty = parseFloat(input.value) || 0;
+          if (qty > 0) {
+            var id = input.dataset.id;
+            var cost = parseFloat(input.dataset.cost) || 0;
+            var totalItem = qty * cost;
+            var cb = document.querySelector('.calc-mat-checkbox[data-id="' + id + '"]');
+            var name = cb ? cb.dataset.name : ('Item ' + id);
+            catalogMatCost += totalItem;
+            selectedCount++;
+            selectedMaterials.push({ id: id, name: name, cost: cost, qty: qty, total: totalItem });
+          }
         });
 
-        const totalMaterials = catalogMatCost + extraMat;
-        const taxAmount = (gross * taxPct) / 100;
-        const cardFeeAmount = (gross * cardPct) / 100;
-        const clinicSplitAmount = (gross * clinicPct) / 100;
-        const netProfit = Math.max(0, gross - totalMaterials - taxAmount - cardFeeAmount - clinicSplitAmount);
+        var totalMaterials = catalogMatCost + extraMat;
+
+        // 1. Taxa do cartão sobre o valor total
+        var cardFeeAmount = gross * (cardPct / 100);
+        var valueAfterCard = Math.max(0, gross - cardFeeAmount);
+
+        // 2. Imposto de 6% sobre o valor após taxa do cartão
+        var taxAmount = valueAfterCard * (taxPct / 100);
+        var valueAfterTax = Math.max(0, valueAfterCard - taxAmount);
+
+        // 3. Repasse da clínica de 30% sobre o valor após imposto
+        var clinicSplitAmount = valueAfterTax * (clinicPct / 100);
+        var professionalSubtotal = Math.max(0, valueAfterTax - clinicSplitAmount);
+
+        // 4. Lucro Líquido final = Cota da Fran - materiais utilizados
+        var netProfit = professionalSubtotal - totalMaterials;
+        var marginPct = gross > 0 ? ((netProfit / gross) * 100).toFixed(1) : '0';
 
         // Atualiza campos ocultos do form
-        document.getElementById('calcMaterialsJson').value = JSON.stringify(selectedMaterials);
-        document.getElementById('calcTaxAmount').value = taxAmount.toFixed(2);
-        document.getElementById('calcCardFeeAmount').value = cardFeeAmount.toFixed(2);
-        document.getElementById('calcClinicSplitAmount').value = clinicSplitAmount.toFixed(2);
-        document.getElementById('calcNetProfitHidden').value = netProfit.toFixed(2);
+        var matJsonElem = document.getElementById('calcMaterialsJson');
+        if (matJsonElem) matJsonElem.value = JSON.stringify(selectedMaterials);
+        var taxElem = document.getElementById('calcTaxAmount');
+        if (taxElem) taxElem.value = taxAmount.toFixed(2);
+        var cardElem = document.getElementById('calcCardFeeAmount');
+        if (cardElem) cardElem.value = cardFeeAmount.toFixed(2);
+        var clinicElem = document.getElementById('calcClinicSplitAmount');
+        if (clinicElem) clinicElem.value = clinicSplitAmount.toFixed(2);
+        var netElemHidden = document.getElementById('calcNetProfitHidden');
+        if (netElemHidden) netElemHidden.value = netProfit.toFixed(2);
 
-        // Atualiza extrato visual
-        document.getElementById('liveGross').textContent = 'R$ ' + formatMoney(gross);
-        document.getElementById('liveMaterials').textContent = '- R$ ' + formatMoney(totalMaterials);
-        document.getElementById('liveTax').textContent = '- R$ ' + formatMoney(taxAmount);
-        document.getElementById('liveTaxPct').textContent = taxPct;
-        document.getElementById('liveCardFee').textContent = '- R$ ' + formatMoney(cardFeeAmount);
-        document.getElementById('liveCardPct').textContent = cardPct;
-        document.getElementById('liveClinicSplit').textContent = '- R$ ' + formatMoney(clinicSplitAmount);
-        document.getElementById('liveClinicPct').textContent = clinicPct;
-        document.getElementById('liveNetProfit').textContent = 'R$ ' + formatMoney(netProfit);
+        // Atualiza extrato visual dos 6 passos
+        var liveGross = document.getElementById('liveGross');
+        if (liveGross) liveGross.textContent = 'R$ ' + formatMoney(gross);
+
+        var liveCardPct = document.getElementById('liveCardPct');
+        if (liveCardPct) liveCardPct.textContent = cardPct.toFixed(2);
+        var liveCardFee = document.getElementById('liveCardFee');
+        if (liveCardFee) liveCardFee.textContent = '- R$ ' + formatMoney(cardFeeAmount);
+        var liveAfterCard = document.getElementById('liveAfterCard');
+        if (liveAfterCard) liveAfterCard.textContent = 'R$ ' + formatMoney(valueAfterCard);
+
+        var liveTaxPct = document.getElementById('liveTaxPct');
+        if (liveTaxPct) liveTaxPct.textContent = taxPct.toFixed(1);
+        var liveTax = document.getElementById('liveTax');
+        if (liveTax) liveTax.textContent = '- R$ ' + formatMoney(taxAmount);
+        var liveAfterTax = document.getElementById('liveAfterTax');
+        if (liveAfterTax) liveAfterTax.textContent = 'R$ ' + formatMoney(valueAfterTax);
+
+        var liveClinicPct = document.getElementById('liveClinicPct');
+        if (liveClinicPct) liveClinicPct.textContent = clinicPct.toFixed(1);
+        var liveClinicSplit = document.getElementById('liveClinicSplit');
+        if (liveClinicSplit) liveClinicSplit.textContent = '- R$ ' + formatMoney(clinicSplitAmount);
+        var liveProfSubtotal = document.getElementById('liveProfSubtotal');
+        if (liveProfSubtotal) liveProfSubtotal.textContent = 'R$ ' + formatMoney(professionalSubtotal);
+
+        var liveMaterials = document.getElementById('liveMaterials');
+        if (liveMaterials) liveMaterials.textContent = '- R$ ' + formatMoney(totalMaterials);
+        var liveMaterialsCount = document.getElementById('liveMaterialsCount');
+        if (liveMaterialsCount) liveMaterialsCount.textContent = selectedCount + ' item(ns) selecionado(s)' + (extraMat > 0 ? ' + extra' : '');
+
+        var liveNetProfit = document.getElementById('liveNetProfit');
+        if (liveNetProfit) {
+          liveNetProfit.textContent = 'R$ ' + formatMoney(netProfit);
+          if (netProfit < 0) {
+            liveNetProfit.style.background = '#fef2f2';
+            liveNetProfit.style.color = '#dc2626';
+          } else {
+            liveNetProfit.style.background = '#f0fdf4';
+            liveNetProfit.style.color = '#15803d';
+          }
+        }
+
+        var liveMarginPct = document.getElementById('liveMarginPct');
+        if (liveMarginPct) liveMarginPct.textContent = 'Margem Líquida: ' + marginPct + '%';
+
+        var selMethod = document.getElementById('calcPaymentMethod');
+        var liveInst = document.getElementById('liveInstallmentLabel');
+        if (selMethod && liveInst) {
+          var opt = selMethod.options[selMethod.selectedIndex];
+          var inst = parseInt(opt.dataset.installments) || 1;
+          if (inst > 1 && gross > 0) {
+            var part = gross / inst;
+            liveInst.textContent = inst + 'x de R$ ' + formatMoney(part);
+          } else {
+            liveInst.textContent = opt.textContent;
+          }
+        }
       }
 
       // Inicializa cálculo
-      window.addEventListener('DOMContentLoaded', recalcProfit);
+      window.addEventListener('DOMContentLoaded', function() {
+        onPaymentMethodChange();
+      });
     </script>
   `;
 
@@ -3071,9 +3446,11 @@ app.get('/admin/consents/:id', requireAuth, (req, res) => {
 app.post('/admin/patients/:id/financial', requireAuth, (req, res) => {
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.params.id);
-  const description = String(req.body.description || '').trim();
+  const description = String(req.body.description || '').trim() || 'Procedimento Realizado';
   const grossValue = parseFloat(req.body.gross_value) || 0;
   const extraMaterials = parseFloat(req.body.extra_materials) || 0;
+  const paymentMethod = String(req.body.payment_method || 'pix').trim();
+  const installments = Math.max(1, parseInt(req.body.installments) || 1);
   const taxPct = parseFloat(req.body.tax_pct) || 0;
   const cardFeePct = parseFloat(req.body.card_fee_pct) || 0;
   const clinicSplitPct = parseFloat(req.body.clinic_split_pct) || 0;
@@ -3086,21 +3463,30 @@ app.post('/admin/patients/:id/financial', requireAuth, (req, res) => {
   } catch (_e) {}
 
   const materialsCost = catalogMatCost + extraMaterials;
-  const taxAmount = (grossValue * taxPct) / 100;
-  const cardFeeAmount = (grossValue * cardFeePct) / 100;
-  const clinicSplitAmount = (grossValue * clinicSplitPct) / 100;
-  const netProfit = Math.max(0, grossValue - materialsCost - taxAmount - cardFeeAmount - clinicSplitAmount);
+  const calc = calculateProcedureProfit({
+    grossValue,
+    cardFeePct,
+    taxPct,
+    clinicSplitPct,
+    materialsCost
+  });
 
   db.prepare(`
     INSERT INTO procedure_financials (
-      patient_id, description, gross_value, materials_cost, materials_json,
-      tax_pct, tax_amount, card_fee_pct, card_fee_amount,
-      clinic_split_pct, clinic_split_amount, net_profit, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      patient_id, description, payment_method, installments,
+      gross_value, materials_cost, materials_json,
+      card_fee_pct, card_fee_amount, value_after_card,
+      tax_pct, tax_amount, value_after_tax,
+      clinic_split_pct, clinic_split_amount, professional_subtotal,
+      net_profit, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    patientId, description, grossValue, materialsCost, materialsJson,
-    taxPct, taxAmount, cardFeePct, cardFeeAmount,
-    clinicSplitPct, clinicSplitAmount, netProfit, nowIso()
+    patientId, description, paymentMethod, installments,
+    calc.grossValue, calc.materialsCost, materialsJson,
+    calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
+    calc.taxPct, calc.taxAmount, calc.valueAfterTax,
+    calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
+    calc.netProfit, nowIso()
   );
 
   res.redirect(`/admin/patients/${patientId}?saved_financial=1#financeiro`);
@@ -4745,6 +5131,585 @@ app.get('/admin/submissions/:id/print', requireAuth, (req, res) => {
   res.send(html);
 });
 
+// ─── MÓDULO SIMULADOR DE PARCELAMENTO & PROPOSTAS ──────────────────
+app.get('/admin/simulador', requireAuth, (req, res) => {
+  const patients = db.prepare('SELECT id, full_name, phone FROM patients ORDER BY full_name ASC').all();
+  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY category ASC, name ASC').all();
+  const cardRates = db.prepare('SELECT * FROM card_fee_rates ORDER BY installments ASC, id ASC').all();
+  const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
+    default_tax_pct: 6.0,
+    default_card_fee_pct: 3.5,
+    default_clinic_split_pct: 30.0
+  };
+
+  const body = `
+    <header class="panel header-panel">
+      <div>
+        <p class="eyebrow">Precificação & WhatsApp</p>
+        <h1>Simulador de Parcelamento & Lucro Líquido</h1>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="/admin/financeiro">💰 Ir para Financeiro</a>
+        <a class="btn" href="/admin/materiais">🧪 Catálogo de Insumos</a>
+        <a class="btn primary" href="/admin/agenda">📅 Agenda</a>
+      </div>
+    </header>
+
+    ${renderAlert(req.query.saved ? 'Procedimento salvo com sucesso no prontuário da paciente!' : null, 'success')}
+    ${renderAlert(req.query.error === 'no_patient' ? 'Selecione uma paciente cadastrada para salvar no prontuário.' : null, 'error')}
+
+    <div class="sim-grid-layout">
+      <!-- COLUNA DA ESQUERDA: Parâmetros & Insumos -->
+      <div>
+        <section class="panel">
+          <h2 style="margin-top:0">1. Dados da Proposta / Procedimento</h2>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+            <label class="field">
+              <span>Valor Total Cobrado (R$) *</span>
+              <input type="number" step="0.01" min="0" id="simGrossValue" placeholder="Ex.: 3000,00" value="3000" oninput="recalcSimulation()" style="font-size:1.15rem;font-weight:700;color:var(--accent)">
+            </label>
+            <label class="field">
+              <span>Custo Extra de Insumos (R$)</span>
+              <input type="number" step="0.01" min="0" id="simExtraMaterials" placeholder="0,00" value="0" oninput="recalcSimulation()">
+            </label>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <label class="field">
+              <span>Procedimento / Protocolo</span>
+              <input type="text" id="simDescription" placeholder="Ex.: Protocolo Elleva Smart + Lavieen" value="Protocolo Estético Personalizado" oninput="updateWhatsAppProposal()">
+            </label>
+            <label class="field">
+              <span>Vincular Paciente (opcional)</span>
+              <select id="simPatientSelect" onchange="onPatientSelectChange()">
+                <option value="" data-phone="" data-name="Paciente">— Simulação Livre / Sem Vínculo —</option>
+                ${patients.map(p => `<option value="${p.id}" data-phone="${escapeHtml(p.phone || '')}" data-name="${escapeHtml(p.full_name)}">${escapeHtml(p.full_name)}${p.phone ? ' (' + escapeHtml(p.phone) + ')' : ''}</option>`).join('')}
+              </select>
+            </label>
+          </div>
+
+          <!-- Alíquotas Configuradas -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px">
+            <label class="field">
+              <span>Imposto (%)</span>
+              <input type="number" step="0.1" id="simTaxPct" value="${clinicSettings.default_tax_pct || 6.0}" oninput="recalcSimulation()">
+            </label>
+            <label class="field">
+              <span>Repasse Clínica (%)</span>
+              <input type="number" step="0.1" id="simClinicPct" value="${clinicSettings.default_clinic_split_pct || 30.0}" oninput="recalcSimulation()">
+            </label>
+          </div>
+
+          <!-- Seletor de Insumos e Tecnologias -->
+          <label class="field" style="margin-top:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-weight:600">Insumos, Materiais & Tecnologias Utilizados</span>
+              <span class="muted" style="font-size:0.78rem" id="simMaterialsSelectedSummary">0 selecionados (R$ 0,00)</span>
+            </div>
+            <div class="materials-picker-container" style="max-height: 480px">
+              ${renderMaterialsPickerHtml({ materials, prefix: 'sim', onchangeFn: 'recalcSimulation' })}
+            </div>
+          </label>
+        </section>
+      </div>
+
+      <!-- COLUNA DA DIREITA: Tabela de Parcelamento, Extrato e WhatsApp -->
+      <div>
+        <!-- TABELA COMPARATIVA DE PARCELAS -->
+        <section class="panel">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <h2 style="margin:0">2. Opções de Pagamento & Rentabilidade</h2>
+            <span class="muted" style="font-size:0.8rem">Clique para selecionar e detalhar</span>
+          </div>
+          <p class="muted" style="font-size:0.8rem;margin:4px 0 10px">
+            Simulação completa com a dedução sequencial oficial (Cartão → Imposto 6% → Clínica 30% → Insumos = Lucro Fran):
+          </p>
+
+          <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+            <table class="sim-installments-table">
+              <thead>
+                <tr>
+                  <th>Modalidade</th>
+                  <th>Taxa</th>
+                  <th>Parcela Paciente</th>
+                  <th>Insumos</th>
+                  <th>Lucro Fran</th>
+                  <th>Margem</th>
+                </tr>
+              </thead>
+              <tbody id="simInstallmentsBody">
+                <!-- Gerado via Javascript -->
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- EXTRATO DETALHADO (6 PASSOS) -->
+        <section class="panel" style="margin-top:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h2 style="margin:0">3. Extrato da Condição Selecionada</h2>
+            <span class="badge signed" id="simSelectedBadge">Pix à Vista</span>
+          </div>
+
+          <div class="step-card">
+            <div class="step-badge">1</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>Faturamento Cobrado</span>
+                <strong id="simLiveGross">R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="simLiveParcelaLabel">À vista (1x)</div>
+            </div>
+          </div>
+
+          <div class="step-card" style="border-left: 3px solid #f59e0b">
+            <div class="step-badge" style="background:#f59e0b">2</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Taxa Cartão (<span id="simLiveCardPct">0.00</span>%)</span>
+                <strong style="color:var(--danger)" id="simLiveCardFee">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após taxa de cartão: <strong id="simLiveAfterCard" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
+          </div>
+
+          <div class="step-card" style="border-left: 3px solid #3b82f6">
+            <div class="step-badge" style="background:#3b82f6">3</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Imposto (<span id="simLiveTaxPct">6.0</span>% pós-cartão)</span>
+                <strong style="color:var(--danger)" id="simLiveTax">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após imposto: <strong id="simLiveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
+          </div>
+
+          <div class="step-card" style="border-left: 3px solid #8b5cf6">
+            <div class="step-badge" style="background:#8b5cf6">4</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Repasse Clínica (<span id="simLiveClinicPct">30.0</span>% pós-imposto)</span>
+                <strong style="color:#9a3412" id="simLiveClinicSplit">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Cota Profissional Fran: <strong id="simLiveProfSubtotal" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
+          </div>
+
+          <div class="step-card" style="border-left: 3px solid #ef4444">
+            <div class="step-badge" style="background:#ef4444">5</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Custo Insumos & Tecnologias</span>
+                <strong style="color:var(--danger)" id="simLiveMaterials">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="simLiveMaterialsCount">0 itens selecionados</div>
+            </div>
+          </div>
+
+          <div class="receipt-total-profit" style="margin-top:14px">
+            <div>
+              <div style="font-size:0.75rem;letter-spacing:0.05em;text-transform:uppercase;opacity:0.9">6. LUCRO LÍQUIDO FINAL FRAN</div>
+              <div style="font-size:0.82rem;font-weight:normal;opacity:0.9" id="simLiveMarginPct">Margem: 0%</div>
+            </div>
+            <span class="profit-badge" id="simLiveNetProfit" style="font-size:1.45rem">R$ 0,00</span>
+          </div>
+        </section>
+
+        <!-- PROPOSTA WHATSAPP -->
+        <section class="panel" style="margin-top:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <h2 style="margin:0">4. Proposta Pronta para WhatsApp</h2>
+            <div style="display:flex;gap:8px">
+              <button type="button" class="btn tiny primary" onclick="copyWhatsAppProposal()">📋 Copiar Proposta</button>
+              <button type="button" class="btn tiny" id="btnSendWhatsApp" onclick="openWhatsApp()" style="background:#25d366;color:#fff;display:none">💬 Enviar WhatsApp</button>
+            </div>
+          </div>
+
+          <div class="whatsapp-copy-box" id="simWhatsAppBox"></div>
+          <div id="copyFeedback" style="display:none;margin-top:8px;color:#15803d;font-weight:600;font-size:0.85rem">
+            ✅ Proposta copiada para a área de transferência! Cole diretamente no WhatsApp da paciente.
+          </div>
+        </section>
+
+        <!-- SALVAR NO PRONTUÁRIO (SE PACIENTE SELECIONADA) -->
+        <section class="panel" id="saveToPatientSection" style="margin-top:20px;display:none;background:#f0fdf4;border:1px solid #86efac">
+          <h3 style="margin:0 0 8px;color:#166534">💾 Salvar no Histórico Financeiro da Paciente</h3>
+          <p style="margin:0 0 12px;font-size:0.84rem;color:#15803d">
+            Deseja lançar este procedimento e os insumos diretamente na pasta de <strong id="savePatientName">Paciente</strong>?
+          </p>
+          <form method="post" action="/admin/simulador/save" id="simSaveForm">
+            <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+            <input type="hidden" name="patient_id" id="savePatientId" value="">
+            <input type="hidden" name="description" id="saveDescription" value="">
+            <input type="hidden" name="gross_value" id="saveGrossValue" value="">
+            <input type="hidden" name="extra_materials" id="saveExtraMaterials" value="">
+            <input type="hidden" name="payment_method" id="savePaymentMethod" value="pix">
+            <input type="hidden" name="installments" id="saveInstallments" value="1">
+            <input type="hidden" name="tax_pct" id="saveTaxPct" value="6.0">
+            <input type="hidden" name="card_fee_pct" id="saveCardFeePct" value="0">
+            <input type="hidden" name="clinic_split_pct" id="saveClinicSplitPct" value="30.0">
+            <input type="hidden" name="materials_json" id="saveMaterialsJson" value="[]">
+            <button type="submit" class="btn primary" style="width:100%">💾 Confirmar e Lançar no Prontuário</button>
+          </form>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      var cardRatesData = ${JSON.stringify(cardRates)};
+      var selectedMethodCode = 'pix';
+      var currentProposalText = '';
+
+      function formatMoney(val) {
+        return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      ${renderMaterialsPickerScript('sim', 'recalcSimulation')}
+
+      function selectRateMethod(code) {
+        selectedMethodCode = code;
+        recalcSimulation();
+      }
+
+      function onPatientSelectChange() {
+        var sel = document.getElementById('simPatientSelect');
+        var opt = sel.options[sel.selectedIndex];
+        var pid = opt.value;
+        var pname = opt.dataset.name || 'Paciente';
+        var phone = opt.dataset.phone || '';
+
+        var saveSec = document.getElementById('saveToPatientSection');
+        var saveName = document.getElementById('savePatientName');
+        var savePid = document.getElementById('savePatientId');
+        var btnWa = document.getElementById('btnSendWhatsApp');
+
+        if (pid) {
+          if (saveSec) saveSec.style.display = 'block';
+          if (saveName) saveName.textContent = pname;
+          if (savePid) savePid.value = pid;
+          if (btnWa) {
+            btnWa.style.display = phone ? 'inline-block' : 'none';
+          }
+        } else {
+          if (saveSec) saveSec.style.display = 'none';
+          if (savePid) savePid.value = '';
+          if (btnWa) btnWa.style.display = 'none';
+        }
+        updateWhatsAppProposal();
+      }
+
+      function recalcSimulation() {
+        var gross = parseFloat(document.getElementById('simGrossValue').value) || 0;
+        var extraMat = parseFloat(document.getElementById('simExtraMaterials').value) || 0;
+        var taxPct = parseFloat(document.getElementById('simTaxPct').value) || 0;
+        var clinicPct = parseFloat(document.getElementById('simClinicPct').value) || 0;
+
+        // Soma materiais selecionados
+        var catalogMatCost = 0;
+        var selectedCount = 0;
+        var selectedMaterials = [];
+        document.querySelectorAll('.sim-mat-qty').forEach(function(input) {
+          var qty = parseFloat(input.value) || 0;
+          if (qty > 0) {
+            var id = input.dataset.id;
+            var cost = parseFloat(input.dataset.cost) || 0;
+            var totalItem = qty * cost;
+            var cb = document.querySelector('.sim-mat-checkbox[data-id="' + id + '"]');
+            var name = cb ? cb.dataset.name : ('Item ' + id);
+            catalogMatCost += totalItem;
+            selectedCount++;
+            selectedMaterials.push({ id: id, name: name, cost: cost, qty: qty, total: totalItem });
+          }
+        });
+
+        var totalMaterials = catalogMatCost + extraMat;
+        var summaryElem = document.getElementById('simMaterialsSelectedSummary');
+        if (summaryElem) {
+          summaryElem.textContent = selectedCount + ' item(ns) (R$ ' + formatMoney(totalMaterials) + ')';
+        }
+
+        // Renderiza linhas da tabela de parcelas
+        var tbody = document.getElementById('simInstallmentsBody');
+        var rowsHtml = '';
+        var selectedRateObj = null;
+
+        cardRatesData.forEach(function(rate) {
+          var isSel = rate.method_code === selectedMethodCode;
+          if (isSel) selectedRateObj = rate;
+
+          var cardFeeAmount = gross * (rate.fee_pct / 100);
+          var valAfterCard = Math.max(0, gross - cardFeeAmount);
+          var taxAmount = valAfterCard * (taxPct / 100);
+          var valAfterTax = Math.max(0, valAfterCard - taxAmount);
+          var clinicAmount = valAfterTax * (clinicPct / 100);
+          var profSubtotal = Math.max(0, valAfterTax - clinicAmount);
+          var netProfit = profSubtotal - totalMaterials;
+          var marginPct = gross > 0 ? ((netProfit / gross) * 100).toFixed(1) : '0';
+
+          var parcelaVal = rate.installments > 0 ? (gross / rate.installments) : gross;
+          var parcelaText = rate.installments > 1
+            ? rate.installments + 'x de R$ ' + formatMoney(parcelaVal)
+            : 'R$ ' + formatMoney(gross);
+
+          var profitColor = netProfit < 0 ? '#dc2626' : '#15803d';
+
+          rowsHtml += '<tr class="' + (isSel ? 'selected' : '') + '" style="cursor:pointer" onclick="selectRateMethod(\\'' + rate.method_code + '\\')">' +
+            '<td><strong>' + rate.label + '</strong></td>' +
+            '<td>' + (rate.fee_pct > 0 ? (rate.fee_pct + '%') : '<span class="badge signed">0%</span>') + '</td>' +
+            '<td><strong>' + parcelaText + '</strong></td>' +
+            '<td style="color:var(--danger)">- R$ ' + formatMoney(totalMaterials) + '</td>' +
+            '<td style="color:' + profitColor + ';font-weight:700">R$ ' + formatMoney(netProfit) + '</td>' +
+            '<td><span style="font-size:0.8rem;opacity:0.85">' + marginPct + '%</span></td>' +
+          '</tr>';
+        });
+
+        if (tbody) tbody.innerHTML = rowsHtml;
+
+        // Se a opção selecionada não existe mais, pega a primeira
+        if (!selectedRateObj && cardRatesData.length) {
+          selectedRateObj = cardRatesData[0];
+          selectedMethodCode = selectedRateObj.method_code;
+        }
+
+        if (selectedRateObj) {
+          var selCardFee = gross * (selectedRateObj.fee_pct / 100);
+          var selAfterCard = Math.max(0, gross - selCardFee);
+          var selTax = selAfterCard * (taxPct / 100);
+          var selAfterTax = Math.max(0, selAfterCard - selTax);
+          var selClinic = selAfterTax * (clinicPct / 100);
+          var selProf = Math.max(0, selAfterTax - selClinic);
+          var selNet = selProf - totalMaterials;
+          var selMargin = gross > 0 ? ((selNet / gross) * 100).toFixed(1) : '0';
+
+          // Atualiza Extrato
+          var bBadge = document.getElementById('simSelectedBadge');
+          if (bBadge) bBadge.textContent = selectedRateObj.label;
+
+          var lg = document.getElementById('simLiveGross');
+          if (lg) lg.textContent = 'R$ ' + formatMoney(gross);
+
+          var lp = document.getElementById('simLiveParcelaLabel');
+          if (lp) {
+            var part = selectedRateObj.installments > 1 ? (gross / selectedRateObj.installments) : gross;
+            lp.textContent = selectedRateObj.installments > 1
+              ? (selectedRateObj.installments + 'x de R$ ' + formatMoney(part))
+              : 'À vista';
+          }
+
+          var lcp = document.getElementById('simLiveCardPct');
+          if (lcp) lcp.textContent = selectedRateObj.fee_pct.toFixed(2);
+          var lcf = document.getElementById('simLiveCardFee');
+          if (lcf) lcf.textContent = '- R$ ' + formatMoney(selCardFee);
+          var lac = document.getElementById('simLiveAfterCard');
+          if (lac) lac.textContent = 'R$ ' + formatMoney(selAfterCard);
+
+          var ltp = document.getElementById('simLiveTaxPct');
+          if (ltp) ltp.textContent = taxPct.toFixed(1);
+          var lt = document.getElementById('simLiveTax');
+          if (lt) lt.textContent = '- R$ ' + formatMoney(selTax);
+          var lat = document.getElementById('simLiveAfterTax');
+          if (lat) lat.textContent = 'R$ ' + formatMoney(selAfterTax);
+
+          var lclp = document.getElementById('simLiveClinicPct');
+          if (lclp) lclp.textContent = clinicPct.toFixed(1);
+          var lcl = document.getElementById('simLiveClinicSplit');
+          if (lcl) lcl.textContent = '- R$ ' + formatMoney(selClinic);
+          var lps = document.getElementById('simLiveProfSubtotal');
+          if (lps) lps.textContent = 'R$ ' + formatMoney(selProf);
+
+          var lm = document.getElementById('simLiveMaterials');
+          if (lm) lm.textContent = '- R$ ' + formatMoney(totalMaterials);
+          var lmc = document.getElementById('simLiveMaterialsCount');
+          if (lmc) lmc.textContent = selectedCount + ' item(ns) selecionado(s)' + (extraMat > 0 ? ' + extra' : '');
+
+          var lnp = document.getElementById('simLiveNetProfit');
+          if (lnp) {
+            lnp.textContent = 'R$ ' + formatMoney(selNet);
+            if (selNet < 0) {
+              lnp.style.background = '#fef2f2';
+              lnp.style.color = '#dc2626';
+            } else {
+              lnp.style.background = '#f0fdf4';
+              lnp.style.color = '#15803d';
+            }
+          }
+
+          var lmp = document.getElementById('simLiveMarginPct');
+          if (lmp) lmp.textContent = 'Margem Líquida: ' + selMargin + '%';
+
+          // Atualiza dados no form de salvar no prontuário
+          var descInput = document.getElementById('simDescription');
+          var descVal = descInput ? descInput.value.trim() : 'Procedimento Clínico';
+
+          var sDesc = document.getElementById('saveDescription');
+          if (sDesc) sDesc.value = descVal;
+          var sGross = document.getElementById('saveGrossValue');
+          if (sGross) sGross.value = gross.toFixed(2);
+          var sExtra = document.getElementById('saveExtraMaterials');
+          if (sExtra) sExtra.value = extraMat.toFixed(2);
+          var sMethod = document.getElementById('savePaymentMethod');
+          if (sMethod) sMethod.value = selectedRateObj.method_code;
+          var sInst = document.getElementById('saveInstallments');
+          if (sInst) sInst.value = selectedRateObj.installments;
+          var sTax = document.getElementById('saveTaxPct');
+          if (sTax) sTax.value = taxPct.toFixed(2);
+          var sCard = document.getElementById('saveCardFeePct');
+          if (sCard) sCard.value = selectedRateObj.fee_pct.toFixed(2);
+          var sClin = document.getElementById('saveClinicSplitPct');
+          if (sClin) sClin.value = clinicPct.toFixed(2);
+          var sMat = document.getElementById('saveMaterialsJson');
+          if (sMat) sMat.value = JSON.stringify(selectedMaterials);
+        }
+
+        updateWhatsAppProposal();
+      }
+
+      function updateWhatsAppProposal() {
+        var gross = parseFloat(document.getElementById('simGrossValue').value) || 0;
+        var descInput = document.getElementById('simDescription');
+        var desc = descInput ? descInput.value.trim() : 'Protocolo Estético Personalizado';
+
+        var sel = document.getElementById('simPatientSelect');
+        var opt = sel ? sel.options[sel.selectedIndex] : null;
+        var patientName = (opt && opt.value) ? opt.dataset.name : 'Paciente';
+
+        // Tabela de parcelas para o texto do WhatsApp (1x, 2x, 3x, 4x, 6x, 10x, 12x)
+        var creditRates = cardRatesData.filter(function(r) { return r.method_code.startsWith('credito_'); });
+        var linesParcelas = '';
+        creditRates.forEach(function(r) {
+          var part = gross / r.installments;
+          linesParcelas += '• ' + r.installments + 'x de R$ ' + formatMoney(part) + '\\n';
+        });
+
+        var text = '✨ *Proposta de Tratamento Personalizada* ✨\\n' +
+          '*Dra. Fransuele Hanel • Biomedicina Estética Avançada*\\n\\n' +
+          'Olá, *' + patientName + '*! Foi um prazer atender você.\\n' +
+          'Preparamos com muito carinho a sua proposta para o seu *' + desc + '*:\\n\\n' +
+          '💎 *CONDIÇÃO ESPECIAL À VISTA (Pix / Dinheiro):*\\n' +
+          '👉 *R$ ' + formatMoney(gross) + '*\\n\\n' +
+          '💳 *OPÇÕES PARCELADAS NO CARTÃO DE CRÉDITO:*\\n' +
+          linesParcelas + '\\n' +
+          '📍 Atendimento personalizado com insumos nobres e tecnologias exclusivas.\\n' +
+          'Ficou com alguma dúvida ou gostaria de agendar a sua sessão?';
+
+        currentProposalText = text;
+        var box = document.getElementById('simWhatsAppBox');
+        if (box) {
+          box.textContent = text.replace(/\\\\n/g, '\\n');
+        }
+      }
+
+      function copyWhatsAppProposal() {
+        var plain = currentProposalText.replace(/\\\\n/g, '\\n');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(plain).then(function() {
+            showCopyFeedback();
+          }).catch(function() {
+            fallbackCopy(plain);
+          });
+        } else {
+          fallbackCopy(plain);
+        }
+      }
+
+      function fallbackCopy(str) {
+        var ta = document.createElement('textarea');
+        ta.value = str;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showCopyFeedback();
+      }
+
+      function showCopyFeedback() {
+        var fb = document.getElementById('copyFeedback');
+        if (fb) {
+          fb.style.display = 'block';
+          setTimeout(function() { fb.style.display = 'none'; }, 4000);
+        }
+      }
+
+      function openWhatsApp() {
+        var sel = document.getElementById('simPatientSelect');
+        var opt = sel.options[sel.selectedIndex];
+        var phone = opt.dataset.phone || '';
+        if (!phone) {
+          alert('Esta paciente não possui número de telefone/WhatsApp cadastrado.');
+          return;
+        }
+        var cleanPhone = phone.replace(/\\D/g, '');
+        if (!cleanPhone.startsWith('55') && cleanPhone.length <= 11) {
+          cleanPhone = '55' + cleanPhone;
+        }
+        var plain = currentProposalText.replace(/\\\\n/g, '\\n');
+        var url = 'https://wa.me/' + cleanPhone + '?text=' + encodeURIComponent(plain);
+        window.open(url, '_blank');
+      }
+
+      window.addEventListener('DOMContentLoaded', function() {
+        recalcSimulation();
+      });
+    </script>
+  `;
+
+  res.send(layout({ title: 'Simulador de Parcelamento', body, userEmail: req.session.adminEmail, activeNav: 'simulador' }));
+});
+
+app.post('/admin/simulador/save', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.body.patient_id);
+  if (!patientId) {
+    res.redirect('/admin/simulador?error=no_patient');
+    return;
+  }
+  const description = String(req.body.description || '').trim() || 'Procedimento Clínico';
+  const grossValue = parseFloat(req.body.gross_value) || 0;
+  const extraMaterials = parseFloat(req.body.extra_materials) || 0;
+  const paymentMethod = String(req.body.payment_method || 'pix').trim();
+  const installments = Math.max(1, parseInt(req.body.installments) || 1);
+  const taxPct = parseFloat(req.body.tax_pct) || 0;
+  const cardFeePct = parseFloat(req.body.card_fee_pct) || 0;
+  const clinicSplitPct = parseFloat(req.body.clinic_split_pct) || 0;
+
+  const materialsJson = String(req.body.materials_json || '[]');
+  let catalogMatCost = 0;
+  try {
+    const list = JSON.parse(materialsJson);
+    catalogMatCost = list.reduce((sum, item) => sum + (parseFloat(item.total) || 0), 0);
+  } catch (_e) {}
+
+  const materialsCost = catalogMatCost + extraMaterials;
+  const calc = calculateProcedureProfit({
+    grossValue,
+    cardFeePct,
+    taxPct,
+    clinicSplitPct,
+    materialsCost
+  });
+
+  db.prepare(`
+    INSERT INTO procedure_financials (
+      patient_id, description, payment_method, installments,
+      gross_value, materials_cost, materials_json,
+      card_fee_pct, card_fee_amount, value_after_card,
+      tax_pct, tax_amount, value_after_tax,
+      clinic_split_pct, clinic_split_amount, professional_subtotal,
+      net_profit, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    patientId, description, paymentMethod, installments,
+    calc.grossValue, calc.materialsCost, materialsJson,
+    calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
+    calc.taxPct, calc.taxAmount, calc.valueAfterTax,
+    calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
+    calc.netProfit, nowIso()
+  );
+
+  res.redirect(`/admin/patients/${patientId}?saved_financial=1#financeiro`);
+});
+
 // ─── MÓDULO FINANCEIRO & RENTABILIDADE CLÍNICA ─────────────────────────────
 app.get('/admin/financeiro', requireAuth, (req, res) => {
   const now = new Date();
@@ -4784,7 +5749,8 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
     .all(dateFrom, dateTo);
 
   const patients = db.prepare('SELECT id, patient_code, full_name FROM patients ORDER BY full_name ASC').all();
-  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY name ASC').all();
+  const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY category ASC, name ASC').all();
+  const cardRates = db.prepare('SELECT * FROM card_fee_rates ORDER BY installments ASC, id ASC').all();
   const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
     default_tax_pct: 6.0,
     default_card_fee_pct: 3.5,
@@ -4797,16 +5763,22 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
 
   const rows = entries.length
     ? entries
-        .map(
-          (e) => `
+        .map((e) => {
+          const payLabel = e.payment_method ? e.payment_method.toUpperCase().replace('_', ' ') : 'PIX';
+          const instLabel = e.installments && e.installments > 1 ? ` (${e.installments}x)` : '';
+          return `
             <tr>
               <td>${escapeHtml(formatDateTime(e.created_at))}</td>
               <td>${e.patient_name ? `<a href="/admin/patients/${e.patient_id}"><strong>${escapeHtml(e.patient_name)}</strong></a>` : '<span class="muted">Avulso</span>'}</td>
-              <td>${escapeHtml(e.description)}</td>
+              <td>
+                <strong>${escapeHtml(e.description)}</strong>
+                <div style="font-size:0.75rem;color:var(--muted)">${escapeHtml(payLabel + instLabel)}</div>
+              </td>
               <td><strong>R$ ${escapeHtml(formatBRL(e.gross_value))}</strong></td>
               <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(e.materials_cost))}</td>
-              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.tax_amount + e.card_fee_amount))}</td>
-              <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))}</td>
+              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.card_fee_amount))} (${e.card_fee_pct}%)</td>
+              <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(e.tax_amount))} (6%)</td>
+              <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))} (30%)</td>
               <td style="color:#15803d;font-weight:700;font-size:0.95rem">R$ ${escapeHtml(formatBRL(e.net_profit))}</td>
               <td>
                 <form method="post" action="/admin/financial/${e.id}/delete" onsubmit="return confirm('Excluir este lançamento financeiro?')" style="margin:0">
@@ -4816,10 +5788,10 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
                 </form>
               </td>
             </tr>
-          `
-        )
+          `;
+        })
         .join('')
-    : '<tr><td colspan="9" class="muted">Nenhum procedimento registrado no período selecionado.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Nenhum procedimento registrado no período selecionado.</td></tr>';
 
   const body = `
     <header class="panel header-panel">
@@ -4828,6 +5800,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         <h1>Custos, Repasses e Lucro Líquido</h1>
       </div>
       <div class="header-actions">
+        <a class="btn" href="/admin/simulador">🧮 Abrir Simulador</a>
         <a class="btn" href="/admin/materiais">🧪 Gerenciar Insumos & Materiais</a>
         <a class="btn primary" href="/admin/agenda">📅 Agenda</a>
       </div>
@@ -4835,6 +5808,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
 
     ${renderAlert(req.query.saved ? 'Registro financeiro salvo com sucesso!' : null, 'success')}
     ${renderAlert(req.query.settings_saved ? 'Alíquotas padrão atualizadas com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.rates_saved ? 'Taxas de cartão atualizadas com sucesso!' : null, 'success')}
     ${renderAlert(req.query.deleted ? 'Registro financeiro excluído.' : null, 'info')}
 
     <!-- Filtro de Período -->
@@ -4925,38 +5899,50 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
                 <input type="number" step="0.01" min="0" name="gross_value" id="mainCalcGross" placeholder="1500,00" required oninput="recalcMainProfit()">
               </label>
               <label class="field">
-                <span>Custo Extra de Materiais (R$)</span>
+                <span>Custo Extra de Insumos (R$)</span>
                 <input type="number" step="0.01" min="0" name="extra_materials" id="mainCalcExtraMat" placeholder="0,00" oninput="recalcMainProfit()">
               </label>
             </div>
 
+            <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px">
+              <label class="field">
+                <span>Forma de Pagamento da Paciente *</span>
+                <select name="payment_method" id="mainPaymentMethod" onchange="onMainPaymentMethodChange()">
+                  ${cardRates.map((r) => `
+                    <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" ${r.method_code === 'pix' ? 'selected' : ''}>
+                      ${escapeHtml(r.label)} (${r.fee_pct > 0 ? r.fee_pct + '%' : 'Sem taxa'})
+                    </option>
+                  `).join('')}
+                </select>
+              </label>
+              <label class="field">
+                <span>Parcelas</span>
+                <input type="number" name="installments" id="mainInstallments" value="1" min="1" max="12" readonly style="background:#f8f6f2">
+              </label>
+            </div>
+
             <label class="field">
-              <span>Insumos e Materiais Utilizados</span>
-              <div class="materials-picker-grid">
-                ${materials.map((m) => `
-                  <div class="material-item-check">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
-                      <input type="checkbox" class="main-mat-cb" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" onchange="recalcMainProfit()">
-                      <span>${escapeHtml(m.name)} <strong style="color:var(--accent);font-size:0.75rem">(R$ ${escapeHtml(formatBRL(m.cost_per_unit))})</strong></span>
-                    </label>
-                    <input type="number" min="1" value="1" class="main-mat-qty" data-id="${m.id}" oninput="recalcMainProfit()" style="width:44px" title="Quantidade">
-                  </div>
-                `).join('')}
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <span>Insumos, Materiais & Tecnologias Utilizados</span>
+                <span class="muted" style="font-size:0.78rem">Selecione e ajuste as quantidades</span>
+              </div>
+              <div class="materials-picker-container">
+                ${renderMaterialsPickerHtml({ materials, prefix: 'main', onchangeFn: 'recalcMainProfit' })}
               </div>
             </label>
 
             <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-top:10px">
               <label class="field">
-                <span>Imposto (%)</span>
-                <input type="number" step="0.1" name="tax_pct" id="mainTaxPct" value="${clinicSettings.default_tax_pct || 6}" oninput="recalcMainProfit()">
+                <span>Taxa Cartão (%)</span>
+                <input type="number" step="0.01" name="card_fee_pct" id="mainCardPct" value="0.00" oninput="recalcMainProfit()">
               </label>
               <label class="field">
-                <span>Taxa Cartão (%)</span>
-                <input type="number" step="0.1" name="card_fee_pct" id="mainCardPct" value="${clinicSettings.default_card_fee_pct || 3.5}" oninput="recalcMainProfit()">
+                <span>Imposto (%)</span>
+                <input type="number" step="0.1" name="tax_pct" id="mainTaxPct" value="${clinicSettings.default_tax_pct || 6.0}" oninput="recalcMainProfit()">
               </label>
               <label class="field">
                 <span>Repasse Clínica (%)</span>
-                <input type="number" step="0.1" name="clinic_split_pct" id="mainClinicPct" value="${clinicSettings.default_clinic_split_pct || 30}" oninput="recalcMainProfit()">
+                <input type="number" step="0.1" name="clinic_split_pct" id="mainClinicPct" value="${clinicSettings.default_clinic_split_pct || 30.0}" oninput="recalcMainProfit()">
               </label>
             </div>
 
@@ -4966,37 +5952,71 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
           </form>
         </div>
 
+        <!-- Recibo em Tempo Real (6 Passos) -->
         <div class="calc-receipt-card">
-          <h3 class="calc-receipt-title">Extrato do Atendimento</h3>
+          <h3 class="calc-receipt-title">Extrato do Atendimento (6 Passos)</h3>
 
-          <div class="receipt-row">
-            <span>Faturamento Bruto</span>
-            <strong id="mainLiveGross">R$ 0,00</strong>
+          <div class="step-card">
+            <div class="step-badge">1</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>Faturamento Cobrado</span>
+                <strong id="mainLiveGross">R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="mainLiveParcelaLabel">À vista (Pix)</div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Insumos / Materiais</span>
-            <strong id="mainLiveMaterials">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #f59e0b">
+            <div class="step-badge" style="background:#f59e0b">2</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Taxa Cartão (<span id="mainLiveCardPct">0.00</span>%)</span>
+                <strong style="color:var(--danger)" id="mainLiveCardFee">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após taxa: <strong id="mainLiveAfterCard" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Imposto (<span id="mainLiveTaxPct">6</span>%)</span>
-            <strong id="mainLiveTax">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #3b82f6">
+            <div class="step-badge" style="background:#3b82f6">3</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Imposto (<span id="mainLiveTaxPct">6.0</span>% pós-cartão)</span>
+                <strong style="color:var(--danger)" id="mainLiveTax">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Subtotal após imposto: <strong id="mainLiveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Taxa Cartão (<span id="mainLiveCardPct">3.5</span>%)</span>
-            <strong id="mainLiveCardFee">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #8b5cf6">
+            <div class="step-badge" style="background:#8b5cf6">4</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Repasse Clínica (<span id="mainLiveClinicPct">30.0</span>% pós-imposto)</span>
+                <strong style="color:#9a3412" id="mainLiveClinicSplit">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub">Cota Profissional Fran: <strong id="mainLiveProfSubtotal" style="color:var(--text)">R$ 0,00</strong></div>
+            </div>
           </div>
 
-          <div class="receipt-row deduct">
-            <span>(-) Repasse da Clínica (<span id="mainLiveClinicPct">30</span>%)</span>
-            <strong id="mainLiveClinicSplit">- R$ 0,00</strong>
+          <div class="step-card" style="border-left: 3px solid #ef4444">
+            <div class="step-badge" style="background:#ef4444">5</div>
+            <div class="step-info">
+              <div class="step-info-header">
+                <span>(-) Custo Insumos & Tecnologias</span>
+                <strong style="color:var(--danger)" id="mainLiveMaterials">- R$ 0,00</strong>
+              </div>
+              <div class="step-info-sub" id="mainLiveMaterialsCount">0 itens selecionados</div>
+            </div>
           </div>
 
-          <div class="receipt-total-profit">
-            <span>LUCRO LÍQUIDO FRAN</span>
-            <span class="profit-badge" id="mainLiveNetProfit">R$ 0,00</span>
+          <div class="receipt-total-profit" style="margin-top:12px">
+            <div>
+              <div style="font-size:0.75rem;letter-spacing:0.05em;text-transform:uppercase;opacity:0.9">6. LUCRO LÍQUIDO FINAL FRAN</div>
+              <div style="font-size:0.8rem;font-weight:normal;opacity:0.9" id="mainLiveMarginPct">Margem: 0%</div>
+            </div>
+            <span class="profit-badge" id="mainLiveNetProfit" style="font-size:1.45rem">R$ 0,00</span>
           </div>
         </div>
       </div>
@@ -5011,11 +6031,12 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
             <tr>
               <th>Data</th>
               <th>Paciente</th>
-              <th>Procedimento</th>
+              <th>Procedimento / Pgto</th>
               <th>Valor Bruto</th>
               <th>Insumos</th>
-              <th>Impostos + Cartão</th>
-              <th>Repasse Clínica</th>
+              <th>Taxa Cartão</th>
+              <th>Imposto 6%</th>
+              <th>Repasse Clínica 30%</th>
               <th>Lucro Líquido</th>
               <th>Ação</th>
             </tr>
@@ -5027,81 +6048,190 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
       </div>
     </section>
 
-    <!-- Configuração de Alíquotas Padrão -->
-    <section class="panel" style="max-width:620px">
-      <h2>Alíquotas e Porcentagens Padrão da Clínica</h2>
-      <p class="muted" style="font-size:0.86rem;margin-top:4px">
-        Valores sugeridos automaticamente ao abrir a calculadora de procedimentos.
-      </p>
-      <form class="form-stack" method="post" action="/admin/financeiro/settings" style="margin-top:14px">
-        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:12px">
-          <label class="field">
-            <span>Imposto Padrão (%)</span>
-            <input type="number" step="0.1" name="default_tax_pct" value="${clinicSettings.default_tax_pct || 6.0}" required>
-          </label>
-          <label class="field">
-            <span>Taxa Cartão Padrão (%)</span>
-            <input type="number" step="0.1" name="default_card_fee_pct" value="${clinicSettings.default_card_fee_pct || 3.5}" required>
-          </label>
-          <label class="field">
-            <span>Repasse Clínica Padrão (%)</span>
-            <input type="number" step="0.1" name="default_clinic_split_pct" value="${clinicSettings.default_clinic_split_pct || 30.0}" required>
-          </label>
-        </div>
-        <button class="btn primary" type="submit">Salvar Alíquotas Padrão</button>
-      </form>
-    </section>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+      <!-- Configuração de Alíquotas Padrão -->
+      <section class="panel">
+        <h2>Alíquotas Padrão da Clínica</h2>
+        <p class="muted" style="font-size:0.86rem;margin-top:4px">
+          Valores sugeridos automaticamente ao abrir a calculadora de procedimentos.
+        </p>
+        <form class="form-stack" method="post" action="/admin/financeiro/settings" style="margin-top:14px">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:12px">
+            <label class="field">
+              <span>Imposto Padrão (%)</span>
+              <input type="number" step="0.1" name="default_tax_pct" value="${clinicSettings.default_tax_pct || 6.0}" required>
+            </label>
+            <label class="field">
+              <span>Taxa Cartão Padrão (%)</span>
+              <input type="number" step="0.1" name="default_card_fee_pct" value="${clinicSettings.default_card_fee_pct || 3.5}" required>
+            </label>
+            <label class="field">
+              <span>Repasse Clínica (%)</span>
+              <input type="number" step="0.1" name="default_clinic_split_pct" value="${clinicSettings.default_clinic_split_pct || 30.0}" required>
+            </label>
+          </div>
+          <button class="btn primary" type="submit">Salvar Alíquotas Padrão</button>
+        </form>
+      </section>
+
+      <!-- Taxas das Maquininhas de Cartão -->
+      <section class="panel" id="taxas-cartao">
+        <h2>💳 Taxas das Maquininhas de Cartão</h2>
+        <p class="muted" style="font-size:0.86rem;margin-top:4px">
+          Atualize as taxas de parcelamento (1x a 12x, Pix e Débito). Elas alimentam o Simulador e as Calculadoras.
+        </p>
+        <form class="form-stack" method="post" action="/admin/financeiro/card-rates" style="margin-top:14px">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(140px, 1fr));gap:10px;max-height:220px;overflow-y:auto;padding-right:4px">
+            ${cardRates.map((r) => `
+              <label class="field" style="margin:0">
+                <span style="font-size:0.8rem;font-weight:600">${escapeHtml(r.label)}</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <input type="number" step="0.01" min="0" name="rates[${escapeHtml(r.method_code)}]" value="${r.fee_pct}" style="text-align:right;padding:4px 6px" required>
+                  <span style="font-weight:bold;color:var(--muted);font-size:0.8rem">%</span>
+                </div>
+              </label>
+            `).join('')}
+          </div>
+          <button class="btn primary" type="submit" style="margin-top:12px">💾 Atualizar Taxas das Maquininhas</button>
+        </form>
+      </section>
+    </div>
 
     <script>
       function formatMoney(val) {
         return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
 
-      function recalcMainProfit() {
-        const gross = parseFloat(document.getElementById('mainCalcGross').value) || 0;
-        const extraMat = parseFloat(document.getElementById('mainCalcExtraMat').value) || 0;
-        const taxPct = parseFloat(document.getElementById('mainTaxPct').value) || 0;
-        const cardPct = parseFloat(document.getElementById('mainCardPct').value) || 0;
-        const clinicPct = parseFloat(document.getElementById('mainClinicPct').value) || 0;
+      ${renderMaterialsPickerScript('main', 'recalcMainProfit')}
 
-        let catalogMatCost = 0;
-        const selectedMaterials = [];
-        document.querySelectorAll('.main-mat-cb:checked').forEach(cb => {
-          const id = cb.dataset.id;
-          const cost = parseFloat(cb.dataset.cost) || 0;
-          const name = cb.dataset.name;
-          const qtyInput = document.querySelector('.main-mat-qty[data-id="' + id + '"]');
-          const qty = qtyInput ? (parseInt(qtyInput.value) || 1) : 1;
-          const totalItemCost = cost * qty;
-          catalogMatCost += totalItemCost;
-          selectedMaterials.push({ id, name, cost, qty, total: totalItemCost });
-        });
-
-        const totalMaterials = catalogMatCost + extraMat;
-        const taxAmount = (gross * taxPct) / 100;
-        const cardFeeAmount = (gross * cardPct) / 100;
-        const clinicSplitAmount = (gross * clinicPct) / 100;
-        const netProfit = Math.max(0, gross - totalMaterials - taxAmount - cardFeeAmount - clinicSplitAmount);
-
-        document.getElementById('mainCalcMaterialsJson').value = JSON.stringify(selectedMaterials);
-        document.getElementById('mainCalcTaxAmount').value = taxAmount.toFixed(2);
-        document.getElementById('mainCalcCardFeeAmount').value = cardFeeAmount.toFixed(2);
-        document.getElementById('mainCalcClinicSplitAmount').value = clinicSplitAmount.toFixed(2);
-        document.getElementById('mainCalcNetProfitHidden').value = netProfit.toFixed(2);
-
-        document.getElementById('mainLiveGross').textContent = 'R$ ' + formatMoney(gross);
-        document.getElementById('mainLiveMaterials').textContent = '- R$ ' + formatMoney(totalMaterials);
-        document.getElementById('mainLiveTax').textContent = '- R$ ' + formatMoney(taxAmount);
-        document.getElementById('mainLiveTaxPct').textContent = taxPct;
-        document.getElementById('mainLiveCardFee').textContent = '- R$ ' + formatMoney(cardFeeAmount);
-        document.getElementById('mainLiveCardPct').textContent = cardPct;
-        document.getElementById('mainLiveClinicSplit').textContent = '- R$ ' + formatMoney(clinicSplitAmount);
-        document.getElementById('mainLiveClinicPct').textContent = clinicPct;
-        document.getElementById('mainLiveNetProfit').textContent = 'R$ ' + formatMoney(netProfit);
+      function onMainPaymentMethodChange() {
+        var sel = document.getElementById('mainPaymentMethod');
+        if (!sel) return;
+        var opt = sel.options[sel.selectedIndex];
+        var fee = parseFloat(opt.dataset.fee) || 0;
+        var inst = parseInt(opt.dataset.installments) || 1;
+        var feeInput = document.getElementById('mainCardPct');
+        if (feeInput) feeInput.value = fee.toFixed(2);
+        var instInput = document.getElementById('mainInstallments');
+        if (instInput) instInput.value = inst;
+        recalcMainProfit();
       }
 
-      window.addEventListener('DOMContentLoaded', recalcMainProfit);
+      function recalcMainProfit() {
+        var gross = parseFloat(document.getElementById('mainCalcGross').value) || 0;
+        var extraMat = parseFloat(document.getElementById('mainCalcExtraMat').value) || 0;
+        var taxPct = parseFloat(document.getElementById('mainTaxPct').value) || 0;
+        var cardPct = parseFloat(document.getElementById('mainCardPct').value) || 0;
+        var clinicPct = parseFloat(document.getElementById('mainClinicPct').value) || 0;
+
+        var catalogMatCost = 0;
+        var selectedCount = 0;
+        var selectedMaterials = [];
+        document.querySelectorAll('.main-mat-qty').forEach(function(input) {
+          var qty = parseFloat(input.value) || 0;
+          if (qty > 0) {
+            var id = input.dataset.id;
+            var cost = parseFloat(input.dataset.cost) || 0;
+            var totalItem = qty * cost;
+            var cb = document.querySelector('.main-mat-checkbox[data-id="' + id + '"]');
+            var name = cb ? cb.dataset.name : ('Item ' + id);
+            catalogMatCost += totalItem;
+            selectedCount++;
+            selectedMaterials.push({ id: id, name: name, cost: cost, qty: qty, total: totalItem });
+          }
+        });
+
+        var totalMaterials = catalogMatCost + extraMat;
+
+        // 1. Taxa do cartão
+        var cardFeeAmount = gross * (cardPct / 100);
+        var valueAfterCard = Math.max(0, gross - cardFeeAmount);
+
+        // 2. Imposto de 6% sobre o valor pós-cartão
+        var taxAmount = valueAfterCard * (taxPct / 100);
+        var valueAfterTax = Math.max(0, valueAfterCard - taxAmount);
+
+        // 3. Repasse da clínica de 30% sobre o valor pós-imposto
+        var clinicSplitAmount = valueAfterTax * (clinicPct / 100);
+        var professionalSubtotal = Math.max(0, valueAfterTax - clinicSplitAmount);
+
+        // 4. Lucro Líquido final = Cota da Fran - materiais
+        var netProfit = professionalSubtotal - totalMaterials;
+        var marginPct = gross > 0 ? ((netProfit / gross) * 100).toFixed(1) : '0';
+
+        var matJsonElem = document.getElementById('mainCalcMaterialsJson');
+        if (matJsonElem) matJsonElem.value = JSON.stringify(selectedMaterials);
+        var taxElem = document.getElementById('mainCalcTaxAmount');
+        if (taxElem) taxElem.value = taxAmount.toFixed(2);
+        var cardElem = document.getElementById('mainCalcCardFeeAmount');
+        if (cardElem) cardElem.value = cardFeeAmount.toFixed(2);
+        var clinicElem = document.getElementById('mainCalcClinicSplitAmount');
+        if (clinicElem) clinicElem.value = clinicSplitAmount.toFixed(2);
+        var netElemHidden = document.getElementById('mainCalcNetProfitHidden');
+        if (netElemHidden) netElemHidden.value = netProfit.toFixed(2);
+
+        var lg = document.getElementById('mainLiveGross');
+        if (lg) lg.textContent = 'R$ ' + formatMoney(gross);
+        var lcp = document.getElementById('mainLiveCardPct');
+        if (lcp) lcp.textContent = cardPct.toFixed(2);
+        var lcf = document.getElementById('mainLiveCardFee');
+        if (lcf) lcf.textContent = '- R$ ' + formatMoney(cardFeeAmount);
+        var lac = document.getElementById('mainLiveAfterCard');
+        if (lac) lac.textContent = 'R$ ' + formatMoney(valueAfterCard);
+
+        var ltp = document.getElementById('mainLiveTaxPct');
+        if (ltp) ltp.textContent = taxPct.toFixed(1);
+        var lt = document.getElementById('mainLiveTax');
+        if (lt) lt.textContent = '- R$ ' + formatMoney(taxAmount);
+        var lat = document.getElementById('mainLiveAfterTax');
+        if (lat) lat.textContent = 'R$ ' + formatMoney(valueAfterTax);
+
+        var lclp = document.getElementById('mainLiveClinicPct');
+        if (lclp) lclp.textContent = clinicPct.toFixed(1);
+        var lcl = document.getElementById('mainLiveClinicSplit');
+        if (lcl) lcl.textContent = '- R$ ' + formatMoney(clinicSplitAmount);
+        var lps = document.getElementById('mainLiveProfSubtotal');
+        if (lps) lps.textContent = 'R$ ' + formatMoney(professionalSubtotal);
+
+        var lm = document.getElementById('mainLiveMaterials');
+        if (lm) lm.textContent = '- R$ ' + formatMoney(totalMaterials);
+        var lmc = document.getElementById('mainLiveMaterialsCount');
+        if (lmc) lmc.textContent = selectedCount + ' item(ns) selecionado(s)' + (extraMat > 0 ? ' + extra' : '');
+
+        var lnp = document.getElementById('mainLiveNetProfit');
+        if (lnp) {
+          lnp.textContent = 'R$ ' + formatMoney(netProfit);
+          if (netProfit < 0) {
+            lnp.style.background = '#fef2f2';
+            lnp.style.color = '#dc2626';
+          } else {
+            lnp.style.background = '#f0fdf4';
+            lnp.style.color = '#15803d';
+          }
+        }
+
+        var lmp = document.getElementById('mainLiveMarginPct');
+        if (lmp) lmp.textContent = 'Margem Líquida: ' + marginPct + '%';
+
+        var selMethod = document.getElementById('mainPaymentMethod');
+        var liveInst = document.getElementById('mainLiveParcelaLabel');
+        if (selMethod && liveInst) {
+          var opt = selMethod.options[selMethod.selectedIndex];
+          var inst = parseInt(opt.dataset.installments) || 1;
+          if (inst > 1 && gross > 0) {
+            var part = gross / inst;
+            liveInst.textContent = inst + 'x de R$ ' + formatMoney(part);
+          } else {
+            liveInst.textContent = opt.textContent;
+          }
+        }
+      }
+
+      window.addEventListener('DOMContentLoaded', function() {
+        onMainPaymentMethodChange();
+      });
     </script>
   `;
 
@@ -5111,9 +6241,11 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
 app.post('/admin/financeiro/entry', requireAuth, (req, res) => {
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.body.patientId || 0) || null;
-  const description = String(req.body.description || '').trim();
+  const description = String(req.body.description || '').trim() || 'Lançamento Financeiro';
   const grossValue = parseFloat(req.body.gross_value) || 0;
   const extraMaterials = parseFloat(req.body.extra_materials) || 0;
+  const paymentMethod = String(req.body.payment_method || 'pix').trim();
+  const installments = Math.max(1, parseInt(req.body.installments) || 1);
   const taxPct = parseFloat(req.body.tax_pct) || 0;
   const cardFeePct = parseFloat(req.body.card_fee_pct) || 0;
   const clinicSplitPct = parseFloat(req.body.clinic_split_pct) || 0;
@@ -5126,24 +6258,49 @@ app.post('/admin/financeiro/entry', requireAuth, (req, res) => {
   } catch (_e) {}
 
   const materialsCost = catalogMatCost + extraMaterials;
-  const taxAmount = (grossValue * taxPct) / 100;
-  const cardFeeAmount = (grossValue * cardFeePct) / 100;
-  const clinicSplitAmount = (grossValue * clinicSplitPct) / 100;
-  const netProfit = Math.max(0, grossValue - materialsCost - taxAmount - cardFeeAmount - clinicSplitAmount);
+  const calc = calculateProcedureProfit({
+    grossValue,
+    cardFeePct,
+    taxPct,
+    clinicSplitPct,
+    materialsCost
+  });
 
   db.prepare(`
     INSERT INTO procedure_financials (
-      patient_id, description, gross_value, materials_cost, materials_json,
-      tax_pct, tax_amount, card_fee_pct, card_fee_amount,
-      clinic_split_pct, clinic_split_amount, net_profit, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      patient_id, description, payment_method, installments,
+      gross_value, materials_cost, materials_json,
+      card_fee_pct, card_fee_amount, value_after_card,
+      tax_pct, tax_amount, value_after_tax,
+      clinic_split_pct, clinic_split_amount, professional_subtotal,
+      net_profit, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    patientId, description, grossValue, materialsCost, materialsJson,
-    taxPct, taxAmount, cardFeePct, cardFeeAmount,
-    clinicSplitPct, clinicSplitAmount, netProfit, nowIso()
+    patientId, description, paymentMethod, installments,
+    calc.grossValue, calc.materialsCost, materialsJson,
+    calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
+    calc.taxPct, calc.taxAmount, calc.valueAfterTax,
+    calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
+    calc.netProfit, nowIso()
   );
 
   res.redirect('/admin/financeiro?saved=1');
+});
+
+app.post('/admin/financeiro/card-rates', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const rates = req.body.rates;
+  if (rates && typeof rates === 'object') {
+    const updateStmt = db.prepare('UPDATE card_fee_rates SET fee_pct = ?, updated_at = ? WHERE method_code = ?');
+    const updateTx = db.transaction(() => {
+      for (const [code, feeVal] of Object.entries(rates)) {
+        const fee = Math.max(0, parseFloat(feeVal) || 0);
+        updateStmt.run(fee, nowIso(), code);
+      }
+    });
+    updateTx();
+  }
+  res.redirect('/admin/financeiro?rates_saved=1#taxas-cartao');
 });
 
 app.post('/admin/financial/:id/delete', requireAuth, (req, res) => {
@@ -5171,13 +6328,14 @@ app.post('/admin/financeiro/settings', requireAuth, (req, res) => {
 
 // ─── GESTÃO DO CATÁLOGO DE INSUMOS & MATERIAIS ─────────────────────────────
 app.get('/admin/materiais', requireAuth, (req, res) => {
-  const materials = db.prepare('SELECT * FROM material_costs ORDER BY is_active DESC, name ASC').all();
+  const materials = db.prepare('SELECT * FROM material_costs ORDER BY category ASC, name ASC').all();
 
   const rows = materials.length
     ? materials
         .map(
           (m) => `
             <tr>
+              <td><span class="badge" style="background:#f4efe7;color:var(--accent);font-weight:600">${escapeHtml(m.category || 'Geral')}</span></td>
               <td><strong>${escapeHtml(m.name)}</strong></td>
               <td>${escapeHtml(m.unit_type)}</td>
               <td><strong>R$ ${escapeHtml(formatBRL(m.cost_per_unit))}</strong></td>
@@ -5203,7 +6361,7 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
           `
         )
         .join('')
-    : '<tr><td colspan="5" class="muted">Nenhum insumo cadastrado ainda.</td></tr>';
+    : '<tr><td colspan="6" class="muted">Nenhum insumo cadastrado ainda.</td></tr>';
 
   const body = `
     <header class="panel header-panel">
@@ -5212,6 +6370,7 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
         <h1>Catálogo de Materiais e Custos</h1>
       </div>
       <div class="header-actions">
+        <a class="btn" href="/admin/simulador">🧮 Simulador</a>
         <a class="btn" href="/admin/financeiro">💰 Voltar ao Financeiro</a>
         <a class="btn primary" href="/admin/agenda">📅 Agenda</a>
       </div>
@@ -5223,11 +6382,12 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
 
     <!-- Tabela de Materiais -->
     <section class="panel">
-      <h2>Materiais e Insumos Cadastrados</h2>
+      <h2>Materiais e Insumos Cadastrados (Oficiais)</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
+              <th>Categoria</th>
               <th>Nome do Material / Produto</th>
               <th>Apresentação / Unidade</th>
               <th>Custo Unitário (R$)</th>
@@ -5243,22 +6403,41 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
     </section>
 
     <!-- Formulário para Novo Material -->
-    <section class="panel" style="max-width:580px">
+    <section class="panel" style="max-width:620px">
       <h2>+ Adicionar Novo Insumo ao Catálogo</h2>
       <form class="form-stack" method="post" action="/admin/materiais" style="margin-top:14px">
         <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-        <label class="field">
-          <span>Nome do Insumo / Produto *</span>
-          <input type="text" name="name" placeholder="Ex.: Toxina Botulínica 100U (Frasco) · Ácido Hialurônico 1ml" required>
-        </label>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px">
           <label class="field">
-            <span>Tipo de Unidade / Apresentação *</span>
-            <input type="text" name="unit_type" placeholder="Ex.: Frasco, Seringa 1ml, Kit, Unidade" required>
+            <span>Nome do Insumo / Produto *</span>
+            <input type="text" name="name" placeholder="Ex.: Toxina Botulínica 100U (Frasco)" required>
+          </label>
+          <label class="field">
+            <span>Categoria *</span>
+            <select name="category" required>
+              <option value="Tecnologia">Tecnologia</option>
+              <option value="Toxina Botulínica">Toxina Botulínica</option>
+              <option value="Preenchedor">Preenchedor</option>
+              <option value="Bioestimulador">Bioestimulador</option>
+              <option value="Fios PDO">Fios PDO</option>
+              <option value="Cânulas e Insumos">Cânulas e Insumos</option>
+              <option value="Procedimento / Sessão">Procedimento / Sessão</option>
+              <option value="Geral" selected>Geral</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Tipo de Unidade *</span>
+            <input type="text" name="unit_type" placeholder="Ex.: Frasco, mL, Fio, Disparo" required>
           </label>
           <label class="field">
             <span>Custo Unitário (R$) *</span>
             <input type="number" step="0.01" min="0" name="cost_per_unit" placeholder="420,00" required>
+          </label>
+          <label class="field">
+            <span>Passo Rápido (+/-)</span>
+            <input type="number" step="1" min="1" name="quick_step" value="1" placeholder="1">
           </label>
         </div>
         <button class="btn primary" type="submit">Cadastrar Insumo</button>
@@ -5272,18 +6451,20 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
 app.post('/admin/materiais', requireAuth, (req, res) => {
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const name = String(req.body.name || '').trim();
+  const category = String(req.body.category || 'Geral').trim();
   const unitType = String(req.body.unit_type || 'Unidade').trim();
   const cost = parseFloat(req.body.cost_per_unit) || 0;
+  const quickStep = parseFloat(req.body.quick_step) || 1;
 
-  if (!name || cost <= 0) {
+  if (!name || cost < 0) {
     res.redirect('/admin/materiais?error=invalid');
     return;
   }
 
   db.prepare(`
-    INSERT INTO material_costs (name, unit_type, cost_per_unit, is_active, created_at)
-    VALUES (?, ?, ?, 1, ?)
-  `).run(name, unitType, cost, nowIso());
+    INSERT INTO material_costs (name, category, unit_type, cost_per_unit, quick_step, is_active, created_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?)
+  `).run(name, category, unitType, cost, quickStep, nowIso());
 
   res.redirect('/admin/materiais?saved=1');
 });
@@ -5538,6 +6719,10 @@ app.use((err, req, res, _next) => {
   );
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor ativo em ${BASE_URL}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Servidor ativo em ${BASE_URL}`);
+  });
+}
+
+module.exports = { app, calculateProcedureProfit };
