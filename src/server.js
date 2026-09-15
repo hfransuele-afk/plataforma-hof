@@ -399,24 +399,39 @@ function ensureNewClinicalAndFinancialTables() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       method_code TEXT NOT NULL UNIQUE,
       label TEXT NOT NULL,
+      brand TEXT NOT NULL DEFAULT 'geral',
       installments INTEGER NOT NULL DEFAULT 1,
       fee_pct REAL NOT NULL DEFAULT 0.0,
       updated_at TEXT NOT NULL
     );
   `);
 
+  const cfrCols = db.pragma('table_info(card_fee_rates)');
+  if (!cfrCols.some((c) => c.name === 'brand')) {
+    db.exec("ALTER TABLE card_fee_rates ADD COLUMN brand TEXT DEFAULT 'geral'");
+  }
+
   if (defaultCardRates && defaultCardRates.length) {
     const upsertCardRate = db.prepare(`
-      INSERT INTO card_fee_rates (method_code, label, installments, fee_pct, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO card_fee_rates (method_code, label, brand, installments, fee_pct, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(method_code) DO UPDATE SET
         label = excluded.label,
-        installments = excluded.installments
+        brand = excluded.brand,
+        installments = excluded.installments,
+        fee_pct = excluded.fee_pct,
+        updated_at = excluded.updated_at
     `);
     for (const r of defaultCardRates) {
-      upsertCardRate.run(r.method_code, r.label, r.installments, r.fee_pct, nowIso());
+      upsertCardRate.run(r.method_code, r.label, r.brand || 'geral', r.installments, r.fee_pct, nowIso());
     }
   }
+
+  // Remove códigos legados obsoletos anteriores à diferenciação Ton Black
+  db.exec("DELETE FROM card_fee_rates WHERE method_code IN ('debito', 'credito_1x', 'credito_2x', 'credito_3x', 'credito_4x', 'credito_5x', 'credito_6x', 'credito_7x', 'credito_8x', 'credito_9x', 'credito_10x', 'credito_11x', 'credito_12x')");
+
+  // Atualiza quick_step = 1 para todas as marcas de Toxina Botulínica
+  db.prepare("UPDATE material_costs SET quick_step = 1 WHERE category = 'Toxina Botulínica'").run();
 
   // Ensure procedure_financials extra columns
   const pfCols = db.pragma('table_info(procedure_financials)');
@@ -576,7 +591,7 @@ function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 're
           </label>
           <div class="material-qty-wrap">
             <button type="button" class="mat-qty-btn" onclick="${prefix}AdjustQty(${m.id}, -${step}); ${onchangeFn}()" title="Diminuir">-</button>
-            <input type="number" min="0" step="${step}" value="0" class="${prefix}-mat-qty mat-qty-input" data-id="${m.id}" data-cost="${m.cost_per_unit}" data-step="${step}" oninput="${prefix}OnQtyInput(${m.id}); ${onchangeFn}()" title="Quantidade">
+            <input type="number" min="0" step="any" value="0" class="${prefix}-mat-qty mat-qty-input" data-id="${m.id}" data-cost="${m.cost_per_unit}" data-step="${step}" oninput="${prefix}OnQtyInput(${m.id}); ${onchangeFn}()" title="Quantidade livre">
             <button type="button" class="mat-qty-btn" onclick="${prefix}AdjustQty(${m.id}, ${step}); ${onchangeFn}()" title="Aumentar">+</button>
           </div>
           <div class="material-item-total" id="${prefix}_total_${m.id}">
@@ -2005,7 +2020,7 @@ app.get('/admin/patients', requireAuth, (req, res) => {
   const rows = patients
     .map(
       (patient) => `
-        <tr>
+        <tr class="patient-row" data-name="${escapeHtml((patient.full_name || '').toLowerCase())}" data-phone="${escapeHtml((patient.phone || '').toLowerCase())}" data-email="${escapeHtml((patient.email || '').toLowerCase())}" data-code="${escapeHtml((toCodeNumber(patient.patient_code) || '').toLowerCase())}">
           <td><span class="patient-code">${escapeHtml(toCodeNumber(patient.patient_code))}</span></td>
           <td><a class="patient-link" href="/admin/patients/${patient.id}">${escapeHtml(patient.full_name)}</a></td>
           <td>${escapeHtml(patient.email || '-')}</td>
@@ -2031,8 +2046,19 @@ app.get('/admin/patients', requireAuth, (req, res) => {
     </header>
 
     <section class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+        <div class="patient-search-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="patientSearchInput" placeholder="Buscar por nome, código (#0001), telefone ou e-mail..." oninput="filterPatients(this.value)">
+          <button type="button" class="clear-btn" id="patientSearchClear" onclick="clearPatientSearch()" style="display:none" title="Limpar busca">✕</button>
+        </div>
+        <div style="font-size:0.86rem;color:var(--muted)" id="patientCountDisplay">
+          Total: <strong>${patients.length}</strong> pacientes cadastradas
+        </div>
+      </div>
+
       <div class="table-wrap">
-        <table>
+        <table id="patientsTable">
           <thead>
             <tr>
               <th>Código</th>
@@ -2046,10 +2072,65 @@ app.get('/admin/patients', requireAuth, (req, res) => {
           </thead>
           <tbody>
             ${rows || '<tr><td colspan="7" class="muted">Nenhuma paciente cadastrada ainda.</td></tr>'}
+            <tr id="noResultsRow" style="display:none">
+              <td colspan="7" class="muted" style="text-align:center;padding:28px 14px">
+                🔍 Nenhuma paciente encontrada com o termo informado.
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
     </section>
+
+    <script>
+      function filterPatients(term) {
+        term = (term || '').toLowerCase().trim();
+        var clearBtn = document.getElementById('patientSearchClear');
+        if (clearBtn) clearBtn.style.display = term ? 'block' : 'none';
+
+        var rows = document.querySelectorAll('.patient-row');
+        var visibleCount = 0;
+        var totalCount = rows.length;
+
+        rows.forEach(function(row) {
+          var name = row.dataset.name || '';
+          var phone = row.dataset.phone || '';
+          var email = row.dataset.email || '';
+          var code = row.dataset.code || '';
+          var allText = (row.textContent || '').toLowerCase();
+
+          if (!term || name.indexOf(term) !== -1 || phone.indexOf(term) !== -1 || email.indexOf(term) !== -1 || code.indexOf(term) !== -1 || allText.indexOf(term) !== -1) {
+            row.style.display = '';
+            visibleCount++;
+          } else {
+            row.style.display = 'none';
+          }
+        });
+
+        var noResults = document.getElementById('noResultsRow');
+        if (noResults) {
+          noResults.style.display = (visibleCount === 0 && totalCount > 0) ? '' : 'none';
+        }
+
+        var counter = document.getElementById('patientCountDisplay');
+        if (counter) {
+          if (term) {
+            counter.innerHTML = 'Exibindo <strong>' + visibleCount + '</strong> de ' + totalCount + ' pacientes';
+          } else {
+            counter.innerHTML = 'Total: <strong>' + totalCount + '</strong> pacientes cadastradas';
+          }
+        }
+      }
+
+      function clearPatientSearch() {
+        var input = document.getElementById('patientSearchInput');
+        if (input) {
+          input.value = '';
+          filterPatients('');
+          input.focus();
+        }
+      }
+    </script>
   `;
 
   res.send(layout({ title: 'Pacientes', body, userEmail: req.session.adminEmail }));
@@ -2142,6 +2223,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   // Insumos ativos e configurações da clínica para calculadora
   const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY category ASC, name ASC').all();
   const cardRates = db.prepare('SELECT * FROM card_fee_rates ORDER BY installments ASC, id ASC').all();
+  const vmRates = cardRates.filter((r) => r.brand === 'visa_master');
+  const eloRates = cardRates.filter((r) => r.brand === 'elo_amex');
   const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
     default_tax_pct: 6.0,
     default_card_fee_pct: 3.5,
@@ -2708,21 +2791,56 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
               </label>
             </div>
 
-            <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px">
-              <label class="field">
-                <span>Forma de Pagamento da Paciente *</span>
-                <select name="payment_method" id="calcPaymentMethod" onchange="onPaymentMethodChange()">
-                  ${cardRates.map((r) => `
-                    <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" ${r.method_code === 'pix' ? 'selected' : ''}>
-                      ${escapeHtml(r.label)} (${r.fee_pct > 0 ? r.fee_pct + '%' : 'Sem taxa'})
-                    </option>
-                  `).join('')}
-                </select>
-              </label>
-              <label class="field">
-                <span>Parcelamento</span>
-                <input type="number" name="installments" id="calcInstallments" value="1" min="1" max="12" readonly style="background:#f8f6f2">
-              </label>
+            <div class="payment-brands-container">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+                <span style="font-weight:700;font-size:0.9rem;color:var(--text)">Forma de Pagamento da Paciente *</span>
+                <span style="font-size:0.8rem;color:var(--accent);font-weight:600" id="calcSelectedPaymentLabel">Selecionado: Pix à Vista (0%)</span>
+              </div>
+
+              <!-- Atalhos rápidos À Vista (Sem Taxa) -->
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+                <button type="button" class="pay-shortcut-btn active" id="calcBtnPix" onclick="selectDirectPayment('pix', 0, 1, 'Pix à Vista')">
+                  🟢 Pix à Vista (0%)
+                </button>
+                <button type="button" class="pay-shortcut-btn" id="calcBtnDinheiro" onclick="selectDirectPayment('dinheiro', 0, 1, 'Dinheiro à Vista')">
+                  💵 Dinheiro à Vista (0%)
+                </button>
+              </div>
+
+              <!-- Dois campos dedicados por bandeira (Ton Black até 21x) -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label class="field brand-select-field" style="margin:0">
+                  <span style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--text)">
+                    <span>💳</span> Visa & Mastercard (1x a 21x)
+                  </span>
+                  <select id="calcPayVisaMaster" onchange="selectBrandOption(this, 'visa_master')">
+                    <option value="">Selecione opção Visa / Master...</option>
+                    ${vmRates.map((r) => `
+                      <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" data-label="${escapeHtml(r.label)}">
+                        ${escapeHtml(r.label)} — ${r.fee_pct.toFixed(2).replace('.', ',')}%
+                      </option>
+                    `).join('')}
+                  </select>
+                </label>
+
+                <label class="field brand-select-field" style="margin:0">
+                  <span style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--text)">
+                    <span>💳</span> Elo & American Express (1x a 21x)
+                  </span>
+                  <select id="calcPayEloAmex" onchange="selectBrandOption(this, 'elo_amex')">
+                    <option value="">Selecione opção Elo / Amex...</option>
+                    ${eloRates.map((r) => `
+                      <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" data-label="${escapeHtml(r.label)}">
+                        ${escapeHtml(r.label)} — ${r.fee_pct.toFixed(2).replace('.', ',')}%
+                      </option>
+                    `).join('')}
+                  </select>
+                </label>
+              </div>
+
+              <!-- Inputs hidden para persistência no banco -->
+              <input type="hidden" name="payment_method" id="calcPaymentMethod" value="pix">
+              <input type="hidden" name="installments" id="calcInstallments" value="1">
             </div>
 
             <!-- Seleção de Materiais Agrupados por Categoria -->
@@ -2861,23 +2979,46 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   // ─── Renderização das Consultas da Agenda & IA ───────────
   const appointmentsRows = appointments
     .map(
-      (appt) => `
-        <tr>
-          <td>${escapeHtml(formatDateTime(appt.start_at))}</td>
-          <td>${escapeHtml(appt.title)}</td>
-          <td>${appt.value != null ? `R$ ${escapeHtml(formatBRL(appt.value))}` : '<span class="muted">—</span>'}</td>
-          <td>${escapeHtml(appt.notes || '-')}</td>
-          <td>
-            ${appt.status !== 'cancelled' ? `
-            <form method="post" action="/admin/agenda/${appt.id}/status" style="display:inline">
-              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-              <input type="hidden" name="returnPatient" value="${patient.id}">
-              ${appt.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed">Confirmar</button>` : ''}
-              <button class="btn tiny danger" name="status" value="cancelled">Cancelar</button>
-            </form>` : '<span class="muted">Cancelada</span>'}
-          </td>
-        </tr>
-      `
+      (appt) => {
+        const startStr = appt.start_at || '';
+        const endStr = appt.end_at || '';
+        const sDate = startStr.slice(0, 10);
+        const sTime = startStr.slice(11, 16);
+        const eDate = endStr.slice(0, 10);
+        const eTime = endStr.slice(11, 16);
+        const apptDataAttr = JSON.stringify({
+          id: appt.id,
+          title: appt.title || '',
+          value: appt.value != null ? String(appt.value) : '',
+          notes: appt.notes || '',
+          startDate: sDate,
+          startTime: sTime,
+          endDate: eDate,
+          endTime: eTime,
+          status: appt.status || 'scheduled'
+        }).replace(/'/g, '&#39;');
+
+        return `
+          <tr>
+            <td>${escapeHtml(formatDateTime(appt.start_at))}</td>
+            <td>${escapeHtml(appt.title)}</td>
+            <td>${appt.value != null ? `R$ ${escapeHtml(formatBRL(appt.value))}` : '<span class="muted">—</span>'}</td>
+            <td>${escapeHtml(appt.notes || '-')}</td>
+            <td>
+              <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+                <button class="btn tiny" type="button" data-appt='${apptDataAttr}' onclick="openPatientApptModalFromBtn(this)">✏️ Editar</button>
+                ${appt.status !== 'cancelled' ? `
+                <form method="post" action="/admin/agenda/${appt.id}/status" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="hidden" name="returnPatient" value="${patient.id}">
+                  ${appt.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar Consulta">Confirmar</button>` : ''}
+                  <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar Consulta">Cancelar</button>
+                </form>` : '<span class="muted" style="font-size:0.8rem">Cancelada</span>'}
+              </div>
+            </td>
+          </tr>
+        `;
+      }
     )
     .join('');
 
@@ -2904,6 +3045,80 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         </table>
       </div>
     </section>
+
+    <!-- Modal de Edição de Agendamento na Pasta da Paciente -->
+    <div class="appt-modal-overlay" id="patientApptModalOverlay" onclick="closePatientApptModal()" style="display:none"></div>
+    <div class="appt-modal" id="patientApptModal" style="display:none">
+      <div class="appt-modal-header">
+        <div>
+          <h3 style="margin:0;font-size:1.1rem">Editar Consulta Agendada</h3>
+          <p class="muted" style="margin:4px 0 0;font-size:0.82rem">Paciente: <strong>${escapeHtml(patient.full_name)}</strong></p>
+        </div>
+        <button class="btn ghost" type="button" onclick="closePatientApptModal()">✕</button>
+      </div>
+
+      <form class="form-stack" method="post" id="patientApptEditForm" action="">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <input type="hidden" name="returnPatient" value="${patient.id}">
+        <input type="hidden" name="startDate" id="pEditStartDate">
+        <input type="hidden" name="startTime" id="pEditStartTime">
+        <input type="hidden" name="endDate" id="pEditEndDate">
+        <input type="hidden" name="endTime" id="pEditEndTime">
+
+        <label class="field">
+          <span>Título / Procedimento *</span>
+          <input type="text" name="title" id="pEditTitle" required>
+        </label>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Data de Início *</span>
+            <input type="date" id="pInputStartDate" required onchange="document.getElementById('pEditStartDate').value=this.value">
+          </label>
+          <label class="field">
+            <span>Horário de Início *</span>
+            <input type="time" id="pInputStartTime" required onchange="document.getElementById('pEditStartTime').value=this.value">
+          </label>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Data de Término (opcional)</span>
+            <input type="date" id="pInputEndDate" onchange="document.getElementById('pEditEndDate').value=this.value">
+          </label>
+          <label class="field">
+            <span>Horário de Término (opcional)</span>
+            <input type="time" id="pInputEndTime" onchange="document.getElementById('pEditEndTime').value=this.value">
+          </label>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Valor Cobrado (R$)</span>
+            <input type="number" step="0.01" min="0" name="value" id="pEditValue" placeholder="0,00">
+          </label>
+          <label class="field">
+            <span>Status da Consulta</span>
+            <select name="status" id="pEditStatus">
+              <option value="scheduled">Agendada</option>
+              <option value="confirmed">Confirmada</option>
+              <option value="completed">Realizada</option>
+              <option value="cancelled">Cancelada</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Observações da Consulta</span>
+          <textarea name="notes" id="pEditNotes" rows="3" placeholder="Orientações ou notas sobre a consulta..."></textarea>
+        </label>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px">
+          <button type="button" class="btn" onclick="closePatientApptModal()">Cancelar</button>
+          <button type="submit" class="btn primary">💾 Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
   `;
 
   const aiMessagesHtml = (() => {
@@ -2984,6 +3199,7 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
     ${renderAlert(req.query.saved_financial ? 'Registro financeiro do procedimento salvo com sucesso!' : null, 'success')}
     ${renderAlert(req.query.deleted_financial ? 'Registro financeiro removido.' : null, 'info')}
     ${renderAlert(req.query.new_link ? 'Novo link de anamnese gerado com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.updated_appt ? 'Consulta agendada atualizada com sucesso!' : null, 'success')}
     ${renderAlert(req.query.error || null, 'error')}
 
     <!-- 1. Ficha de Anamnese (Topo) -->
@@ -3054,17 +3270,92 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
 
       ${renderMaterialsPickerScript('calc', 'recalcProfit')}
 
-      function onPaymentMethodChange() {
-        var sel = document.getElementById('calcPaymentMethod');
-        if (!sel) return;
-        var opt = sel.options[sel.selectedIndex];
+      function selectDirectPayment(methodCode, feePct, inst, label) {
+        document.getElementById('calcPaymentMethod').value = methodCode;
+        document.getElementById('calcInstallments').value = inst;
+        var feeInput = document.getElementById('calcCardFeePct');
+        if (feeInput) feeInput.value = feePct.toFixed(2);
+
+        var selVM = document.getElementById('calcPayVisaMaster');
+        var selElo = document.getElementById('calcPayEloAmex');
+        if (selVM) { selVM.value = ''; selVM.classList.remove('has-value'); }
+        if (selElo) { selElo.value = ''; selElo.classList.remove('has-value'); }
+
+        var btnPix = document.getElementById('calcBtnPix');
+        var btnDin = document.getElementById('calcBtnDinheiro');
+        if (btnPix) btnPix.classList.toggle('active', methodCode === 'pix');
+        if (btnDin) btnDin.classList.toggle('active', methodCode === 'dinheiro');
+
+        var lbl = document.getElementById('calcSelectedPaymentLabel');
+        if (lbl) lbl.textContent = 'Selecionado: ' + label + ' (0%)';
+
+        recalcProfit();
+      }
+
+      function selectBrandOption(selectElem, brand) {
+        if (!selectElem.value) return;
+        var opt = selectElem.options[selectElem.selectedIndex];
         var fee = parseFloat(opt.dataset.fee) || 0;
         var inst = parseInt(opt.dataset.installments) || 1;
+        var label = opt.dataset.label || selectElem.value;
+
+        document.getElementById('calcPaymentMethod').value = selectElem.value;
+        document.getElementById('calcInstallments').value = inst;
         var feeInput = document.getElementById('calcCardFeePct');
         if (feeInput) feeInput.value = fee.toFixed(2);
-        var instInput = document.getElementById('calcInstallments');
-        if (instInput) instInput.value = inst;
+
+        if (brand === 'visa_master') {
+          var other = document.getElementById('calcPayEloAmex');
+          if (other) { other.value = ''; other.classList.remove('has-value'); }
+          selectElem.classList.add('has-value');
+        } else {
+          var other = document.getElementById('calcPayVisaMaster');
+          if (other) { other.value = ''; other.classList.remove('has-value'); }
+          selectElem.classList.add('has-value');
+        }
+
+        var btnPix = document.getElementById('calcBtnPix');
+        var btnDin = document.getElementById('calcBtnDinheiro');
+        if (btnPix) btnPix.classList.remove('active');
+        if (btnDin) btnDin.classList.remove('active');
+
+        var lbl = document.getElementById('calcSelectedPaymentLabel');
+        if (lbl) lbl.textContent = 'Selecionado: ' + label + ' (' + fee.toFixed(2).replace('.', ',') + '%)';
+
         recalcProfit();
+      }
+
+      function openPatientApptModalFromBtn(btn) {
+        try {
+          var data = JSON.parse(btn.getAttribute('data-appt'));
+          var form = document.getElementById('patientApptEditForm');
+          form.action = '/admin/agenda/' + data.id + '/edit';
+          document.getElementById('pEditTitle').value = data.title || '';
+          document.getElementById('pEditValue').value = data.value || '';
+          document.getElementById('pEditNotes').value = data.notes || '';
+          document.getElementById('pEditStartDate').value = data.startDate || '';
+          document.getElementById('pInputStartDate').value = data.startDate || '';
+          document.getElementById('pEditStartTime').value = data.startTime || '';
+          document.getElementById('pInputStartTime').value = data.startTime || '';
+          document.getElementById('pEditEndDate').value = data.endDate || '';
+          document.getElementById('pInputEndDate').value = data.endDate || '';
+          document.getElementById('pEditEndTime').value = data.endTime || '';
+          document.getElementById('pInputEndTime').value = data.endTime || '';
+          if (data.status) {
+            document.getElementById('pEditStatus').value = data.status;
+          }
+          document.getElementById('patientApptModal').style.display = 'block';
+          document.getElementById('patientApptModalOverlay').style.display = 'block';
+          document.body.style.overflow = 'hidden';
+        } catch(err) {
+          console.error('Erro ao abrir edição de consulta:', err);
+        }
+      }
+
+      function closePatientApptModal() {
+        document.getElementById('patientApptModal').style.display = 'none';
+        document.getElementById('patientApptModalOverlay').style.display = 'none';
+        document.body.style.overflow = '';
       }
 
       function recalcProfit() {
@@ -3167,23 +3458,28 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         var liveMarginPct = document.getElementById('liveMarginPct');
         if (liveMarginPct) liveMarginPct.textContent = 'Margem Líquida: ' + marginPct + '%';
 
-        var selMethod = document.getElementById('calcPaymentMethod');
+        var methodCode = (document.getElementById('calcPaymentMethod') || {}).value || 'pix';
+        var inst = parseInt((document.getElementById('calcInstallments') || {}).value) || 1;
         var liveInst = document.getElementById('liveInstallmentLabel');
-        if (selMethod && liveInst) {
-          var opt = selMethod.options[selMethod.selectedIndex];
-          var inst = parseInt(opt.dataset.installments) || 1;
+        if (liveInst) {
           if (inst > 1 && gross > 0) {
             var part = gross / inst;
             liveInst.textContent = inst + 'x de R$ ' + formatMoney(part);
+          } else if (methodCode === 'dinheiro') {
+            liveInst.textContent = 'Dinheiro à Vista (Sem taxa)';
+          } else if (methodCode === 'pix') {
+            liveInst.textContent = 'Pix à Vista (Sem taxa)';
+          } else if (methodCode.includes('debito')) {
+            liveInst.textContent = 'Débito à Vista';
           } else {
-            liveInst.textContent = opt.textContent;
+            liveInst.textContent = '1x à vista';
           }
         }
       }
 
       // Inicializa cálculo
       window.addEventListener('DOMContentLoaded', function() {
-        onPaymentMethodChange();
+        recalcProfit();
       });
     </script>
   `;
@@ -3584,6 +3880,7 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
             endDate: endParts[0] || '',
             endTime: (endParts[1] || '').slice(0, 5),
             notes: event.notes || '',
+            status: event.status || 'scheduled',
             value: event.value != null ? String(event.value) : ''
           }).replace(/'/g, '&#39;');
 
@@ -3600,13 +3897,16 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
                 ${statusBadge}
                 ${event.value != null ? `<span class="appointment-value">R$ ${escapeHtml(formatBRL(event.value))}</span>` : ''}
               </div>
-              ${event.status !== 'cancelled' ? `
-              <form method="post" action="/admin/agenda/${event.id}/status" style="display:inline">
-                <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-                <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
-                ${event.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar">✓</button>` : ''}
-                <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar">✗</button>
-              </form>` : ''}
+              <div style="display:inline-flex;gap:3px;align-items:center">
+                <button class="btn tiny" type="button" onclick="event.stopPropagation(); window.openApptModal(JSON.parse(this.closest('.calendar-event-block').querySelector('.calendar-event-info').dataset.appt))" title="Editar Agendamento">✏️</button>
+                ${event.status !== 'cancelled' ? `
+                <form method="post" action="/admin/agenda/${event.id}/status" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+                  ${event.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar">✓</button>` : ''}
+                  <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar">✗</button>
+                </form>` : ''}
+              </div>
             </div>`;
         })
         .join('');
@@ -3773,10 +4073,21 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
           </div>
         </div>
 
-        <label class="field">
-          <span>Valor (R$)</span>
-          <input type="number" name="value" id="editValue" min="0" step="0.01" placeholder="0,00">
-        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field">
+            <span>Valor (R$)</span>
+            <input type="number" name="value" id="editValue" min="0" step="0.01" placeholder="0,00">
+          </label>
+          <label class="field">
+            <span>Status da Consulta</span>
+            <select name="status" id="editStatus">
+              <option value="scheduled">Agendada</option>
+              <option value="confirmed">Confirmada</option>
+              <option value="completed">Realizada</option>
+              <option value="cancelled">Cancelada</option>
+            </select>
+          </label>
+        </div>
 
         <label class="field">
           <span>Observações do agendamento</span>
@@ -3874,10 +4185,13 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
           notesWrap.style.display = 'none';
         }
 
-        // Título e valor
+        // Título, valor e status
         document.getElementById('editTitle').value = data.title || '';
         document.getElementById('editValue').value = data.value || '';
         document.getElementById('editNotes').value = data.notes || '';
+        if (data.status && document.getElementById('editStatus')) {
+          document.getElementById('editStatus').value = data.status;
+        }
 
         // Seletores de data/hora início
         const [sy, sm, sd] = (data.startDate || '').split('-');
@@ -3930,6 +4244,59 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
         document.getElementById('editEndDate').value = ey && em && ed ? ey+'-'+em+'-'+ed : '';
         document.getElementById('editEndTime').value = eh && en ? eh+':'+en : '';
       });
+
+      // Funções de busca rápida de paciente para marcação de consulta
+      window.onPatientDatalistInput = function(input) {
+        var val = (input.value || '').trim();
+        var sel = document.getElementById('agendaPatientSelect');
+        if (!val) {
+          if (sel) sel.value = '';
+          return;
+        }
+        var datalist = document.getElementById('agendaPatientsDatalist');
+        if (datalist && sel) {
+          var opts = datalist.querySelectorAll('option');
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].value.toLowerCase() === val.toLowerCase()) {
+              sel.value = opts[i].dataset.id;
+              return;
+            }
+          }
+        }
+      };
+
+      window.onPatientDatalistChange = function(input) {
+        var val = (input.value || '').trim();
+        var sel = document.getElementById('agendaPatientSelect');
+        if (!val) {
+          if (sel) sel.value = '';
+          return;
+        }
+        var datalist = document.getElementById('agendaPatientsDatalist');
+        if (datalist && sel) {
+          var opts = datalist.querySelectorAll('option');
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].value.toLowerCase().indexOf(val.toLowerCase()) !== -1) {
+              sel.value = opts[i].dataset.id;
+              input.value = opts[i].value;
+              return;
+            }
+          }
+        }
+      };
+
+      window.onPatientSelectDropdownChange = function(sel) {
+        var input = document.getElementById('patientSearchInputBox');
+        if (!input) return;
+        if (!sel.value) {
+          input.value = '';
+          return;
+        }
+        var opt = sel.options[sel.selectedIndex];
+        if (opt) {
+          input.value = opt.textContent.trim();
+        }
+      };
     })();
     </script>
 
@@ -3955,11 +4322,23 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
 
         <div id="existingPatientWrap">
           <label class="field">
-            <span>Selecionar Paciente cadastrada</span>
-            <select name="patientId">
-              <option value="">— Sem paciente vinculado —</option>
-              ${patientOptions}
-            </select>
+            <span>Selecionar Paciente cadastrada (digite para buscar ou selecione na lista)</span>
+            <div style="position:relative">
+              <input type="text" id="patientSearchInputBox" list="agendaPatientsDatalist" placeholder="🔍 Digite nome, telefone ou código da paciente..."
+                style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);font-size:0.92rem;background:#fff;box-sizing:border-box"
+                oninput="onPatientDatalistInput(this)" onchange="onPatientDatalistChange(this)">
+              <datalist id="agendaPatientsDatalist">
+                ${patients.map((p) => `
+                  <option data-id="${p.id}" value="${escapeHtml(toCodeNumber(p.patient_code))} - ${escapeHtml(p.full_name)}${p.phone ? ' (' + escapeHtml(p.phone) + ')' : ''}">
+                `).join('')}
+              </datalist>
+            </div>
+            <div style="margin-top:8px">
+              <select name="patientId" id="agendaPatientSelect" onchange="onPatientSelectDropdownChange(this)">
+                <option value="">— Ou selecione na lista completa de pacientes cadastradas (${patients.length}) —</option>
+                ${patientOptions}
+              </select>
+            </div>
           </label>
         </div>
 
@@ -4932,8 +5311,15 @@ app.post('/admin/agenda/:id/edit', requireAuth, (req, res) => {
   const notes = String(req.body.notes || '').trim() || null;
   const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
   const returnMonth = String(req.body.returnMonth || '').trim();
+  const returnPatient = Number(req.body.returnPatient || 0);
+  const status = ['scheduled', 'confirmed', 'completed', 'cancelled'].includes(req.body.status) ? req.body.status : null;
+  const newPatientId = req.body.patientId !== undefined ? (Number(req.body.patientId) || null) : undefined;
 
   if (!title || !startAt) {
+    if (returnPatient) {
+      res.redirect(`/admin/patients/${returnPatient}?error=${encodeURIComponent('Preencha título e horário.')}#agenda`);
+      return;
+    }
     const m = /^\d{4}-\d{2}$/.test(returnMonth) ? returnMonth : monthKeyFromDate(new Date());
     res.redirect(`/admin/agenda?month=${m}&error=${encodeURIComponent('Preencha título e horário.')}`);
     return;
@@ -4942,12 +5328,28 @@ app.post('/admin/agenda/:id/edit', requireAuth, (req, res) => {
   const appt = db.prepare('SELECT id, start_at FROM appointments WHERE id = ?').get(apptId);
   if (!appt) { res.status(404).send('Agendamento não encontrado.'); return; }
 
-  db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=? WHERE id=?')
-    .run(title, startAt, endAt, notes, value, apptId);
+  if (status && newPatientId !== undefined) {
+    db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=?, status=?, patient_id=? WHERE id=?')
+      .run(title, startAt, endAt, notes, value, status, newPatientId, apptId);
+  } else if (status) {
+    db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=?, status=? WHERE id=?')
+      .run(title, startAt, endAt, notes, value, status, apptId);
+  } else if (newPatientId !== undefined) {
+    db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=?, patient_id=? WHERE id=?')
+      .run(title, startAt, endAt, notes, value, newPatientId, apptId);
+  } else {
+    db.prepare('UPDATE appointments SET title=?, start_at=?, end_at=?, notes=?, value=? WHERE id=?')
+      .run(title, startAt, endAt, notes, value, apptId);
+  }
+
+  if (returnPatient) {
+    res.redirect(`/admin/patients/${returnPatient}?updated_appt=1#agenda`);
+    return;
+  }
 
   const targetMonth = String(startAt).slice(0, 7);
   const m = /^\d{4}-\d{2}$/.test(targetMonth) ? targetMonth : returnMonth;
-  res.redirect(`/admin/agenda?month=${encodeURIComponent(m)}`);
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(m)}&updated=1`);
 });
 
 // ─── Agenda: atualizar status de consulta ─────────────────────────────────
@@ -5220,16 +5622,34 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
         <section class="panel">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <h2 style="margin:0">2. Opções de Pagamento & Rentabilidade</h2>
-            <span class="muted" style="font-size:0.8rem">Clique para selecionar e detalhar</span>
+            <span class="muted" style="font-size:0.8rem">Clique na linha para detalhar</span>
           </div>
+
+          <!-- Filtros de Bandeira (Ton Black até 21x) -->
+          <div style="display:flex;gap:6px;margin:10px 0 6px;flex-wrap:wrap">
+            <button type="button" class="pay-shortcut-btn active" id="simFilterBtn_all" onclick="setSimBrandFilter('all')">
+              Todas (${cardRates.length})
+            </button>
+            <button type="button" class="pay-shortcut-btn" id="simFilterBtn_visa_master" onclick="setSimBrandFilter('visa_master')">
+              💳 Visa & Master (1x a 21x)
+            </button>
+            <button type="button" class="pay-shortcut-btn" id="simFilterBtn_elo_amex" onclick="setSimBrandFilter('elo_amex')">
+              💳 Elo & Amex (1x a 21x)
+            </button>
+            <button type="button" class="pay-shortcut-btn" id="simFilterBtn_geral" onclick="setSimBrandFilter('geral')">
+              🟢 Pix / Dinheiro (0%)
+            </button>
+          </div>
+
           <p class="muted" style="font-size:0.8rem;margin:4px 0 10px">
             Simulação completa com a dedução sequencial oficial (Cartão → Imposto 6% → Clínica 30% → Insumos = Lucro Fran):
           </p>
 
-          <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+          <div class="table-wrap" style="max-height:380px;overflow-y:auto">
             <table class="sim-installments-table">
               <thead>
                 <tr>
+                  <th>Bandeira</th>
                   <th>Modalidade</th>
                   <th>Taxa</th>
                   <th>Parcela Paciente</th>
@@ -5358,11 +5778,24 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
 
     <script>
       var cardRatesData = ${JSON.stringify(cardRates)};
+      var simCurrentBrandFilter = 'all';
       var selectedMethodCode = 'pix';
       var currentProposalText = '';
 
       function formatMoney(val) {
         return (val || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      function setSimBrandFilter(brand) {
+        simCurrentBrandFilter = brand;
+        ['all', 'visa_master', 'elo_amex', 'geral'].forEach(function(b) {
+          var btn = document.getElementById('simFilterBtn_' + b);
+          if (btn) {
+            if (b === brand) btn.classList.add('active');
+            else btn.classList.remove('active');
+          }
+        });
+        recalcSimulation();
       }
 
       ${renderMaterialsPickerScript('sim', 'recalcSimulation')}
@@ -5435,8 +5868,13 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
         var selectedRateObj = null;
 
         cardRatesData.forEach(function(rate) {
+          var rBrand = rate.brand || 'geral';
+          var isMatch = (simCurrentBrandFilter === 'all') || (rBrand === simCurrentBrandFilter);
+
           var isSel = rate.method_code === selectedMethodCode;
           if (isSel) selectedRateObj = rate;
+
+          if (!isMatch) return;
 
           var cardFeeAmount = gross * (rate.fee_pct / 100);
           var valAfterCard = Math.max(0, gross - cardFeeAmount);
@@ -5454,9 +5892,19 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
 
           var profitColor = netProfit < 0 ? '#dc2626' : '#15803d';
 
+          var brandBadge = '';
+          if (rate.brand === 'visa_master') {
+            brandBadge = '<span class="badge" style="background:#e0f2fe;color:#0369a1;font-size:0.75rem">Visa / Master</span>';
+          } else if (rate.brand === 'elo_amex') {
+            brandBadge = '<span class="badge" style="background:#fef3c7;color:#92400e;font-size:0.75rem">Elo / Amex</span>';
+          } else {
+            brandBadge = '<span class="badge signed" style="font-size:0.75rem">À Vista</span>';
+          }
+
           rowsHtml += '<tr class="' + (isSel ? 'selected' : '') + '" style="cursor:pointer" onclick="selectRateMethod(\\'' + rate.method_code + '\\')">' +
+            '<td>' + brandBadge + '</td>' +
             '<td><strong>' + rate.label + '</strong></td>' +
-            '<td>' + (rate.fee_pct > 0 ? (rate.fee_pct + '%') : '<span class="badge signed">0%</span>') + '</td>' +
+            '<td>' + (rate.fee_pct > 0 ? (rate.fee_pct.toFixed(2).replace('.', ',') + '%') : '<span class="badge signed">0%</span>') + '</td>' +
             '<td><strong>' + parcelaText + '</strong></td>' +
             '<td style="color:var(--danger)">- R$ ' + formatMoney(totalMaterials) + '</td>' +
             '<td style="color:' + profitColor + ';font-weight:700">R$ ' + formatMoney(netProfit) + '</td>' +
@@ -5574,10 +6022,14 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
         var opt = sel ? sel.options[sel.selectedIndex] : null;
         var patientName = (opt && opt.value) ? opt.dataset.name : 'Paciente';
 
-        // Tabela de parcelas para o texto do WhatsApp (1x, 2x, 3x, 4x, 6x, 10x, 12x)
-        var creditRates = cardRatesData.filter(function(r) { return r.method_code.startsWith('credito_'); });
+        // Tabela de parcelas para o texto do WhatsApp (Visa/Master e Elo/Amex)
+        var vmRates = cardRatesData.filter(function(r) { return r.brand === 'visa_master' && r.installments > 0; });
+        var keyInstallments = [1, 2, 3, 4, 5, 6, 10, 12];
+        var vmFiltered = vmRates.filter(function(r) { return keyInstallments.indexOf(r.installments) !== -1; });
+        if (!vmFiltered.length) vmFiltered = vmRates.slice(0, 12);
+
         var linesParcelas = '';
-        creditRates.forEach(function(r) {
+        vmFiltered.forEach(function(r) {
           var part = gross / r.installments;
           linesParcelas += '• ' + r.installments + 'x de R$ ' + formatMoney(part) + '\\n';
         });
@@ -5588,8 +6040,9 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
           'Preparamos com muito carinho a sua proposta para o seu *' + desc + '*:\\n\\n' +
           '💎 *CONDIÇÃO ESPECIAL À VISTA (Pix / Dinheiro):*\\n' +
           '👉 *R$ ' + formatMoney(gross) + '*\\n\\n' +
-          '💳 *OPÇÕES PARCELADAS NO CARTÃO DE CRÉDITO:*\\n' +
+          '💳 *OPÇÕES NO CARTÃO (Visa & Mastercard):*\\n' +
           linesParcelas + '\\n' +
+          '*(Também parcelamos em até 21x e aceitamos bandeiras Elo e American Express)*\\n\\n' +
           '📍 Atendimento personalizado com insumos nobres e tecnologias exclusivas.\\n' +
           'Ficou com alguma dúvida ou gostaria de agendar a sua sessão?';
 
@@ -5751,6 +6204,9 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
   const patients = db.prepare('SELECT id, patient_code, full_name FROM patients ORDER BY full_name ASC').all();
   const materials = db.prepare('SELECT * FROM material_costs WHERE is_active = 1 ORDER BY category ASC, name ASC').all();
   const cardRates = db.prepare('SELECT * FROM card_fee_rates ORDER BY installments ASC, id ASC').all();
+  const vmRates = cardRates.filter((r) => r.brand === 'visa_master');
+  const eloRates = cardRates.filter((r) => r.brand === 'elo_amex');
+  const generalRates = cardRates.filter((r) => !r.brand || r.brand === 'geral');
   const clinicSettings = db.prepare('SELECT * FROM clinic_settings LIMIT 1').get() || {
     default_tax_pct: 6.0,
     default_card_fee_pct: 3.5,
@@ -5904,21 +6360,56 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
               </label>
             </div>
 
-            <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px">
-              <label class="field">
-                <span>Forma de Pagamento da Paciente *</span>
-                <select name="payment_method" id="mainPaymentMethod" onchange="onMainPaymentMethodChange()">
-                  ${cardRates.map((r) => `
-                    <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" ${r.method_code === 'pix' ? 'selected' : ''}>
-                      ${escapeHtml(r.label)} (${r.fee_pct > 0 ? r.fee_pct + '%' : 'Sem taxa'})
-                    </option>
-                  `).join('')}
-                </select>
-              </label>
-              <label class="field">
-                <span>Parcelas</span>
-                <input type="number" name="installments" id="mainInstallments" value="1" min="1" max="12" readonly style="background:#f8f6f2">
-              </label>
+            <div class="payment-brands-container">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+                <span style="font-weight:700;font-size:0.9rem;color:var(--text)">Forma de Pagamento da Paciente *</span>
+                <span style="font-size:0.8rem;color:var(--accent);font-weight:600" id="mainSelectedPaymentLabel">Selecionado: Pix à Vista (0%)</span>
+              </div>
+
+              <!-- Atalhos rápidos À Vista -->
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+                <button type="button" class="pay-shortcut-btn active" id="mainBtnPix" onclick="selectMainDirectPayment('pix', 0, 1, 'Pix à Vista')">
+                  🟢 Pix à Vista (0%)
+                </button>
+                <button type="button" class="pay-shortcut-btn" id="mainBtnDinheiro" onclick="selectMainDirectPayment('dinheiro', 0, 1, 'Dinheiro à Vista')">
+                  💵 Dinheiro à Vista (0%)
+                </button>
+              </div>
+
+              <!-- Dois campos dedicados por bandeira (Ton Black até 21x) -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label class="field brand-select-field" style="margin:0">
+                  <span style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--text)">
+                    <span>💳</span> Visa & Mastercard (1x a 21x)
+                  </span>
+                  <select id="mainPayVisaMaster" onchange="selectMainBrandOption(this, 'visa_master')">
+                    <option value="">Selecione opção Visa / Master...</option>
+                    ${vmRates.map((r) => `
+                      <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" data-label="${escapeHtml(r.label)}">
+                        ${escapeHtml(r.label)} — ${r.fee_pct.toFixed(2).replace('.', ',')}%
+                      </option>
+                    `).join('')}
+                  </select>
+                </label>
+
+                <label class="field brand-select-field" style="margin:0">
+                  <span style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--text)">
+                    <span>💳</span> Elo & American Express (1x a 21x)
+                  </span>
+                  <select id="mainPayEloAmex" onchange="selectMainBrandOption(this, 'elo_amex')">
+                    <option value="">Selecione opção Elo / Amex...</option>
+                    ${eloRates.map((r) => `
+                      <option value="${escapeHtml(r.method_code)}" data-fee="${r.fee_pct}" data-installments="${r.installments}" data-label="${escapeHtml(r.label)}">
+                        ${escapeHtml(r.label)} — ${r.fee_pct.toFixed(2).replace('.', ',')}%
+                      </option>
+                    `).join('')}
+                  </select>
+                </label>
+              </div>
+
+              <!-- Inputs hidden para persistência no banco -->
+              <input type="hidden" name="payment_method" id="mainPaymentMethod" value="pix">
+              <input type="hidden" name="installments" id="mainInstallments" value="1">
             </div>
 
             <label class="field">
@@ -6075,26 +6566,76 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         </form>
       </section>
 
-      <!-- Taxas das Maquininhas de Cartão -->
+      <!-- Taxas das Maquininhas de Cartão (Ton Black) -->
       <section class="panel" id="taxas-cartao">
-        <h2>💳 Taxas das Maquininhas de Cartão</h2>
+        <h2>💳 Taxas das Maquininhas de Cartão (Ton Black)</h2>
         <p class="muted" style="font-size:0.86rem;margin-top:4px">
-          Atualize as taxas de parcelamento (1x a 12x, Pix e Débito). Elas alimentam o Simulador e as Calculadoras.
+          Configure as taxas oficiais de parcelamento da Ton Black (R$ 20 mil a R$ 40 mil / 1 dia útil). Elas alimentam o Simulador, as Fichas de Procedimento e o Cálculo de Lucro Líquido.
         </p>
         <form class="form-stack" method="post" action="/admin/financeiro/card-rates" style="margin-top:14px">
           <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(140px, 1fr));gap:10px;max-height:220px;overflow-y:auto;padding-right:4px">
-            ${cardRates.map((r) => `
-              <label class="field" style="margin:0">
-                <span style="font-size:0.8rem;font-weight:600">${escapeHtml(r.label)}</span>
-                <div style="display:flex;align-items:center;gap:4px">
-                  <input type="number" step="0.01" min="0" name="rates[${escapeHtml(r.method_code)}]" value="${r.fee_pct}" style="text-align:right;padding:4px 6px" required>
-                  <span style="font-weight:bold;color:var(--muted);font-size:0.8rem">%</span>
-                </div>
-              </label>
-            `).join('')}
+
+          <!-- Seção 1: Visa & Mastercard -->
+          <div style="margin-bottom:16px;border:1px solid var(--border);border-radius:10px;padding:14px;background:#f8fafc">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span style="font-size:1.1rem">💳</span>
+              <strong style="color:var(--text);font-size:0.95rem">1. Visa & Mastercard (1ª Coluna - Débito e Crédito 1x a 21x)</strong>
+              <span class="badge" style="background:#e0f2fe;color:#0369a1;font-size:0.75rem">${vmRates.length} taxas</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(130px, 1fr));gap:8px">
+              ${vmRates.map((r) => `
+                <label class="field" style="margin:0">
+                  <span style="font-size:0.78rem;font-weight:600">${escapeHtml(r.label.replace(' (Visa/Master)', ''))}</span>
+                  <div style="display:flex;align-items:center;gap:4px">
+                    <input type="number" step="0.01" min="0" name="rates[${escapeHtml(r.method_code)}]" value="${r.fee_pct}" style="text-align:right;padding:4px 6px;font-size:0.85rem" required>
+                    <span style="font-weight:bold;color:var(--muted);font-size:0.8rem">%</span>
+                  </div>
+                </label>
+              `).join('')}
+            </div>
           </div>
-          <button class="btn primary" type="submit" style="margin-top:12px">💾 Atualizar Taxas das Maquininhas</button>
+
+          <!-- Seção 2: Elo & American Express -->
+          <div style="margin-bottom:16px;border:1px solid var(--border);border-radius:10px;padding:14px;background:#fffbeb">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span style="font-size:1.1rem">💳</span>
+              <strong style="color:var(--text);font-size:0.95rem">2. Elo & American Express (2ª Coluna - Débito e Crédito 1x a 21x)</strong>
+              <span class="badge" style="background:#fef3c7;color:#92400e;font-size:0.75rem">${eloRates.length} taxas</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(130px, 1fr));gap:8px">
+              ${eloRates.map((r) => `
+                <label class="field" style="margin:0">
+                  <span style="font-size:0.78rem;font-weight:600">${escapeHtml(r.label.replace(' (Elo/Amex)', ''))}</span>
+                  <div style="display:flex;align-items:center;gap:4px">
+                    <input type="number" step="0.01" min="0" name="rates[${escapeHtml(r.method_code)}]" value="${r.fee_pct}" style="text-align:right;padding:4px 6px;font-size:0.85rem" required>
+                    <span style="font-weight:bold;color:var(--muted);font-size:0.8rem">%</span>
+                  </div>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Seção 3: Pix & Dinheiro (Gerais) -->
+          <div style="margin-bottom:16px;border:1px solid var(--border);border-radius:10px;padding:14px;background:#f0fdf4">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span style="font-size:1.1rem">🟢</span>
+              <strong style="color:var(--text);font-size:0.95rem">3. Pix & Dinheiro (À Vista)</strong>
+              <span class="badge signed" style="font-size:0.75rem">Sem taxa</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(130px, 1fr));gap:8px">
+              ${generalRates.map((r) => `
+                <label class="field" style="margin:0">
+                  <span style="font-size:0.78rem;font-weight:600">${escapeHtml(r.label)}</span>
+                  <div style="display:flex;align-items:center;gap:4px">
+                    <input type="number" step="0.01" min="0" name="rates[${escapeHtml(r.method_code)}]" value="${r.fee_pct}" style="text-align:right;padding:4px 6px;font-size:0.85rem" required>
+                    <span style="font-weight:bold;color:var(--muted);font-size:0.8rem">%</span>
+                  </div>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <button class="btn primary" type="submit">💾 Atualizar Todas as Taxas da Ton Black</button>
         </form>
       </section>
     </div>
@@ -6106,16 +6647,58 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
 
       ${renderMaterialsPickerScript('main', 'recalcMainProfit')}
 
-      function onMainPaymentMethodChange() {
-        var sel = document.getElementById('mainPaymentMethod');
-        if (!sel) return;
-        var opt = sel.options[sel.selectedIndex];
+      function selectMainDirectPayment(methodCode, feePct, inst, label) {
+        document.getElementById('mainPaymentMethod').value = methodCode;
+        document.getElementById('mainInstallments').value = inst;
+        var feeInput = document.getElementById('mainCardPct');
+        if (feeInput) feeInput.value = feePct.toFixed(2);
+
+        var selVM = document.getElementById('mainPayVisaMaster');
+        var selElo = document.getElementById('mainPayEloAmex');
+        if (selVM) { selVM.value = ''; selVM.classList.remove('has-value'); }
+        if (selElo) { selElo.value = ''; selElo.classList.remove('has-value'); }
+
+        var btnPix = document.getElementById('mainBtnPix');
+        var btnDin = document.getElementById('mainBtnDinheiro');
+        if (btnPix) btnPix.classList.toggle('active', methodCode === 'pix');
+        if (btnDin) btnDin.classList.toggle('active', methodCode === 'dinheiro');
+
+        var lbl = document.getElementById('mainSelectedPaymentLabel');
+        if (lbl) lbl.textContent = 'Selecionado: ' + label + ' (0%)';
+
+        recalcMainProfit();
+      }
+
+      function selectMainBrandOption(selectElem, brand) {
+        if (!selectElem.value) return;
+        var opt = selectElem.options[selectElem.selectedIndex];
         var fee = parseFloat(opt.dataset.fee) || 0;
         var inst = parseInt(opt.dataset.installments) || 1;
+        var label = opt.dataset.label || selectElem.value;
+
+        document.getElementById('mainPaymentMethod').value = selectElem.value;
+        document.getElementById('mainInstallments').value = inst;
         var feeInput = document.getElementById('mainCardPct');
         if (feeInput) feeInput.value = fee.toFixed(2);
-        var instInput = document.getElementById('mainInstallments');
-        if (instInput) instInput.value = inst;
+
+        if (brand === 'visa_master') {
+          var other = document.getElementById('mainPayEloAmex');
+          if (other) { other.value = ''; other.classList.remove('has-value'); }
+          selectElem.classList.add('has-value');
+        } else {
+          var other = document.getElementById('mainPayVisaMaster');
+          if (other) { other.value = ''; other.classList.remove('has-value'); }
+          selectElem.classList.add('has-value');
+        }
+
+        var btnPix = document.getElementById('mainBtnPix');
+        var btnDin = document.getElementById('mainBtnDinheiro');
+        if (btnPix) btnPix.classList.remove('active');
+        if (btnDin) btnDin.classList.remove('active');
+
+        var lbl = document.getElementById('mainSelectedPaymentLabel');
+        if (lbl) lbl.textContent = 'Selecionado: ' + label + ' (' + fee.toFixed(2).replace('.', ',') + '%)';
+
         recalcMainProfit();
       }
 
@@ -6215,22 +6798,21 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         var lmp = document.getElementById('mainLiveMarginPct');
         if (lmp) lmp.textContent = 'Margem Líquida: ' + marginPct + '%';
 
-        var selMethod = document.getElementById('mainPaymentMethod');
+        var inst = parseInt(document.getElementById('mainInstallments').value) || 1;
         var liveInst = document.getElementById('mainLiveParcelaLabel');
-        if (selMethod && liveInst) {
-          var opt = selMethod.options[selMethod.selectedIndex];
-          var inst = parseInt(opt.dataset.installments) || 1;
+        if (liveInst) {
           if (inst > 1 && gross > 0) {
             var part = gross / inst;
             liveInst.textContent = inst + 'x de R$ ' + formatMoney(part);
           } else {
-            liveInst.textContent = opt.textContent;
+            var mCode = document.getElementById('mainPaymentMethod').value;
+            liveInst.textContent = mCode === 'dinheiro' ? 'Dinheiro à Vista' : (mCode === 'pix' ? 'Pix à Vista' : 'À vista (1x)');
           }
         }
       }
 
       window.addEventListener('DOMContentLoaded', function() {
-        onMainPaymentMethodChange();
+        selectMainDirectPayment('pix', 0, 1, 'Pix à Vista');
       });
     </script>
   `;

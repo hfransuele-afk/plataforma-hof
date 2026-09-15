@@ -2102,3 +2102,97 @@ th {
   color: #2f2520;
 }
 
+/* Seletores de Pagamento por Bandeiras */
+.payment-brands-container {
+  background: #faf8f5;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.brand-select-field select {
+  font-size: 0.88rem;
+  font-weight: 500;
+  border: 1.5px solid var(--line);
+  transition: all 0.2s ease;
+}
+
+.brand-select-field select:focus,
+.brand-select-field select.has-value {
+  border-color: var(--accent);
+  background-color: #fff;
+}
+
+.pay-shortcut-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pay-shortcut-btn:hover {
+  background: #f4efe7;
+  border-color: var(--accent);
+}
+
+.pay-shortcut-btn.active {
+  background: #1c3f2d;
+  color: #fff;
+  border-color: #1c3f2d;
+  box-shadow: 0 2px 6px rgba(28, 63, 45, 0.2);
+}
+
+/* Barra de Busca de Pacientes */
+.patient-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 280px;
+  max-width: 480px;
+}
+
+.patient-search-wrap input {
+  width: 100%;
+  padding: 10px 14px 10px 38px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 0.92rem;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.patient-search-wrap input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(28, 63, 45, 0.1);
+}
+
+.patient-search-wrap .search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.patient-search-wrap .clear-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #888;
+}
+
+
