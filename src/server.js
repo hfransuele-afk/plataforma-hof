@@ -450,6 +450,18 @@ function ensureNewClinicalAndFinancialTables() {
   if (!pfCols.some((c) => c.name === 'professional_subtotal')) {
     db.exec("ALTER TABLE procedure_financials ADD COLUMN professional_subtotal REAL DEFAULT 0");
   }
+  if (!pfCols.some((c) => c.name === 'procedure_date')) {
+    db.exec("ALTER TABLE procedure_financials ADD COLUMN procedure_date TEXT DEFAULT ''");
+  }
+
+  // Ensure submissions extra columns for AI clinical intelligence
+  const subCols = db.pragma('table_info(submissions)');
+  if (!subCols.some((c) => c.name === 'ai_summary')) {
+    db.exec("ALTER TABLE submissions ADD COLUMN ai_summary TEXT DEFAULT ''");
+  }
+  if (!subCols.some((c) => c.name === 'clinical_alerts_json')) {
+    db.exec("ALTER TABLE submissions ADD COLUMN clinical_alerts_json TEXT DEFAULT ''");
+  }
 
   // Seed / Update official clinic materials from materialCatalog
   if (defaultMaterials && defaultMaterials.length) {
@@ -726,6 +738,33 @@ function formatDateTime(value) {
   }
 
   return String(value);
+}
+
+function formatDateBR(dateStr) {
+  if (!dateStr) return '-';
+  const parts = String(dateStr).split('T')[0].split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return String(dateStr);
+}
+
+function getFifthBusinessDay(year, month1to12) {
+  let count = 0;
+  let day = 1;
+  const daysInMonth = new Date(year, month1to12, 0).getDate();
+  while (day <= daysInMonth) {
+    const d = new Date(year, month1to12 - 1, day);
+    const dayOfWeek = d.getDay(); // 0 = Sun, 6 = Sat
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      count++;
+      if (count === 5) {
+        return d;
+      }
+    }
+    day++;
+  }
+  return new Date(year, month1to12 - 1, 7);
 }
 
 function combineDateTime(datePart, timePart) {
@@ -1287,7 +1326,7 @@ app.get('/admin', requireAuth, (req, res) => {
       SELECT
         (SELECT COUNT(*) FROM patients) AS total_patients,
         (SELECT COUNT(*) FROM submissions) AS total_submissions,
-        (SELECT COUNT(*) FROM patient_links WHERE is_used = 0) AS pending_links,
+        (SELECT COUNT(*) FROM patient_links WHERE is_used = 0 AND id NOT IN (SELECT link_id FROM submissions WHERE link_id IS NOT NULL)) AS pending_links,
         (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments
       `
     )
@@ -1320,9 +1359,9 @@ app.get('/admin', requireAuth, (req, res) => {
     )
     .all();
 
-  // Separa links pendentes dos já respondidos
+  // Separa links pendentes dos já respondidos (links respondidos nunca aparecem como pendentes)
   const pendingRows = rows
-    .filter((row) => !row.is_used)
+    .filter((row) => !row.is_used && !row.submission_id)
     .map((row) => {
       const patientLink = `${BASE_URL}/paciente/${row.token}`;
       const patientName = row.patient_name || '-';
@@ -1346,13 +1385,19 @@ app.get('/admin', requireAuth, (req, res) => {
               </button>
             </div>
           </td>
+          <td>
+            <form method="post" action="/admin/links/${row.id}/delete" onsubmit="return confirm('Deseja excluir este link pendente?')" style="margin:0">
+              <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+              <button class="btn tiny danger" type="submit">Excluir</button>
+            </form>
+          </td>
         </tr>
       `;
     })
     .join('');
 
   // Links já respondidos: só mostra nome da paciente
-  const answeredLinks = rows.filter((row) => row.is_used);
+  const answeredLinks = rows.filter((row) => row.is_used || row.submission_id);
   const answeredChips = answeredLinks
     .map((row) => {
       const patientName = row.patient_name || 'Paciente';
@@ -1459,10 +1504,11 @@ app.get('/admin', requireAuth, (req, res) => {
               <th>Paciente</th>
               <th>E-mail</th>
               <th>Link</th>
+              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
-            ${pendingRows || '<tr><td colspan="4" class="muted">Nenhum link pendente. Todos os questionários foram respondidos!</td></tr>'}
+            ${pendingRows || '<tr><td colspan="5" class="muted">Nenhum link pendente. Todos os questionários foram respondidos!</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1493,6 +1539,23 @@ app.post('/admin/links', requireAuth, (req, res) => {
   ).run(token, hintedPatient?.id || null, patientNameHint, patientEmailHint, nowIso());
 
   res.redirect(`/admin?created=${encodeURIComponent(token)}`);
+});
+
+app.post('/admin/links/:id/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const linkId = Number(req.params.id);
+  const link = db.prepare('SELECT id, is_used FROM patient_links WHERE id = ?').get(linkId);
+  if (!link) {
+    res.redirect('/admin');
+    return;
+  }
+  const hasSub = db.prepare('SELECT id FROM submissions WHERE link_id = ? LIMIT 1').get(linkId);
+  if (hasSub || link.is_used) {
+    res.status(400).send('Este link já possui questionário respondido e não pode ser excluído.');
+    return;
+  }
+  db.prepare('DELETE FROM patient_links WHERE id = ?').run(linkId);
+  res.redirect('/admin?link_deleted=1');
 });
 
 app.get('/paciente/:token', (req, res) => {
@@ -2287,6 +2350,16 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       })
       .join('');
 
+    let clinicalAlerts = null;
+    try {
+      clinicalAlerts = latestSubmission.clinical_alerts_json ? JSON.parse(latestSubmission.clinical_alerts_json) : null;
+    } catch (_e) {}
+    if (!clinicalAlerts) {
+      clinicalAlerts = analyzeClinicalAnamnese(latestData);
+    }
+    const aiSummary = latestSubmission.ai_summary || '';
+    const clinicalAlertsHtml = renderClinicalAlertsCardHtml(clinicalAlerts, aiSummary, latestSubmission.id, patient.id, req.session.csrfToken);
+
     anamneseSectionHtml = `
       <section class="panel" id="anamnese">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px">
@@ -2308,6 +2381,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             </a>
           </div>
         </div>
+
+        ${clinicalAlertsHtml}
 
         <!-- Destaques Rápidos da Anamnese -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:14px;background:#fffaf6;border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:18px">
@@ -2650,10 +2725,16 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
                 <a class="btn tiny gold" href="/admin/consents/${c.id}" target="_blank" rel="noopener">
                   📄 Visualizar / Imprimir Termo
                 </a>
-                <form method="post" action="/admin/patients/${patient.id}/consents/${c.id}/delete" onsubmit="return confirm('Deseja excluir este termo?')" style="margin:0">
-                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
-                  <button class="btn tiny danger" type="submit">Excluir</button>
-                </form>
+                ${isSigned ? `
+                  <span class="badge signed" style="font-size:0.75rem;padding:4px 8px;display:inline-flex;align-items:center;gap:4px" title="Termo assinado com custódia e guarda legal mínima de 5 anos">
+                    🔒 Guarda Legal (5 anos)
+                  </span>
+                ` : `
+                  <form method="post" action="/admin/patients/${patient.id}/consents/${c.id}/delete" onsubmit="return confirm('Deseja excluir este link de termo não assinado?')" style="margin:0">
+                    <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                    <button class="btn tiny danger" type="submit">Excluir</button>
+                  </form>
+                `}
               </div>
             </div>
           `;
@@ -2673,6 +2754,11 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             Emita o termo oficial correspondente a cada procedimento para a paciente assinar no celular. Todos os termos assinados ficam arquivados permanentemente nesta pasta.
           </p>
         </div>
+      </div>
+
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 14px;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
+        <span style="font-size:1.3rem">🛡️</span>
+        <span style="font-size:0.84rem;color:#166534"><strong>Custódia e Guarda Legal Permanente:</strong> Todos os termos de consentimento assinados, anamneses, evoluções de prontuário e fotos possuem armazenamento seguro e inalterável com retenção obrigatória por no mínimo 5 anos (conforme normas regulatórias CFO/CFM e LGPD).</span>
       </div>
 
       ${issuedToken ? `
@@ -2725,22 +2811,55 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
   `;
 
   // ─── Renderização da Calculadora de Custos & Lucro Líquido ─
+  const todayIso = nowIso().slice(0, 10);
+
+  const dateGroups = {};
   const financialRowsHtml = financials.length
     ? financials.map((f) => {
         const payLabel = f.payment_method ? f.payment_method.toUpperCase().replace('_', ' ') : 'PIX';
         const instLabel = f.installments && f.installments > 1 ? ` (${f.installments}x)` : '';
+        const procDate = f.procedure_date || (f.created_at ? f.created_at.slice(0, 10) : '');
+        const dateDisplay = procDate ? formatDate(procDate) : formatDateTime(f.created_at);
+
+        // Agrupa para totalizador por data
+        const groupKey = procDate || (f.created_at ? f.created_at.slice(0, 10) : 'Sem data');
+        if (!dateGroups[groupKey]) {
+          dateGroups[groupKey] = {
+            date: groupKey,
+            count: 0,
+            gross: 0,
+            cardFee: 0,
+            tax: 0,
+            clinicSplit: 0,
+            materials: 0,
+            netProfit: 0,
+            procs: []
+          };
+        }
+        dateGroups[groupKey].count += 1;
+        dateGroups[groupKey].gross += (f.gross_value || 0);
+        dateGroups[groupKey].cardFee += (f.card_fee_amount || 0);
+        dateGroups[groupKey].tax += (f.tax_amount || 0);
+        dateGroups[groupKey].clinicSplit += (f.clinic_split_amount || 0);
+        dateGroups[groupKey].materials += (f.materials_cost || 0);
+        dateGroups[groupKey].netProfit += (f.net_profit || 0);
+        dateGroups[groupKey].procs.push(f.description);
+
         return `
         <tr>
-          <td>${escapeHtml(formatDateTime(f.created_at))}</td>
+          <td>
+            <strong>${escapeHtml(dateDisplay)}</strong>
+            ${f.created_at && f.procedure_date ? `<div style="font-size:0.72rem;color:var(--muted)">lançado ${escapeHtml(f.created_at.slice(11, 16))}</div>` : ''}
+          </td>
           <td>
             <strong>${escapeHtml(f.description)}</strong>
             <div style="font-size:0.75rem;color:var(--muted)">${escapeHtml(payLabel + instLabel)}</div>
           </td>
           <td><strong>R$ ${escapeHtml(formatBRL(f.gross_value))}</strong></td>
-          <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(f.materials_cost))}</td>
           <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(f.card_fee_amount))} (${f.card_fee_pct}%)</td>
           <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(f.tax_amount))} (6%)</td>
           <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(f.clinic_split_amount))} (30%)</td>
+          <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(f.materials_cost))}</td>
           <td style="color:#15803d;font-weight:700">R$ ${escapeHtml(formatBRL(f.net_profit))}</td>
           <td>
             <form method="post" action="/admin/patients/${patient.id}/financial/${f.id}/delete" onsubmit="return confirm('Excluir este registro financeiro?')" style="margin:0">
@@ -2752,6 +2871,50 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
       `;
       }).join('')
     : '<tr><td colspan="9" class="muted">Nenhum cálculo registrado para esta paciente ainda.</td></tr>';
+
+  const dateTotalsHtml = Object.values(dateGroups).length > 0
+    ? Object.values(dateGroups).map((g) => {
+        const dFormatted = g.date !== 'Sem data' ? formatDate(g.date) : 'Sem data';
+        return `
+          <div style="background:#fffaf6;border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="font-size:1.1rem">📅</span>
+                <strong style="font-size:0.95rem;color:var(--accent)">Atendimentos de ${escapeHtml(dFormatted)}</strong>
+                <span class="badge" style="font-size:0.75rem">${g.count} procedimento(s)</span>
+              </div>
+              <span style="font-size:0.8rem;color:var(--muted)">${escapeHtml(g.procs.join(' · '))}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;font-size:0.82rem">
+              <div style="background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #eee">
+                <span class="muted" style="display:block;font-size:0.7rem">TOTAL BRUTO</span>
+                <strong style="font-size:0.95rem">R$ ${escapeHtml(formatBRL(g.gross))}</strong>
+              </div>
+              <div style="background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #eee">
+                <span class="muted" style="display:block;font-size:0.7rem">(-) TAXA CARTÃO</span>
+                <strong style="color:var(--muted);font-size:0.95rem">- R$ ${escapeHtml(formatBRL(g.cardFee))}</strong>
+              </div>
+              <div style="background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #eee">
+                <span class="muted" style="display:block;font-size:0.7rem">(-) IMPOSTO 6%</span>
+                <strong style="color:#b45309;font-size:0.95rem">- R$ ${escapeHtml(formatBRL(g.tax))}</strong>
+              </div>
+              <div style="background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #eee">
+                <span class="muted" style="display:block;font-size:0.7rem">(-) REPASSE CLÍNICA 30%</span>
+                <strong style="color:#9a3412;font-size:0.95rem">- R$ ${escapeHtml(formatBRL(g.clinicSplit))}</strong>
+              </div>
+              <div style="background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #eee">
+                <span class="muted" style="display:block;font-size:0.7rem">(-) INSUMOS</span>
+                <strong style="color:var(--danger);font-size:0.95rem">- R$ ${escapeHtml(formatBRL(g.materials))}</strong>
+              </div>
+              <div style="background:#f0fdf4;padding:8px 12px;border-radius:8px;border:1px solid #bbf7d0">
+                <span style="display:block;font-size:0.7rem;color:#15803d;font-weight:600">LÍQUIDO FRAN DA DATA</span>
+                <strong style="color:#15803d;font-size:1rem">R$ ${escapeHtml(formatBRL(g.netProfit))}</strong>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('')
+    : '';
 
   const financialSectionHtml = `
     <section class="panel" id="financeiro">
@@ -2775,12 +2938,18 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             <input type="hidden" name="clinic_split_amount" id="calcClinicSplitAmount" value="0">
             <input type="hidden" name="net_profit" id="calcNetProfitHidden" value="0">
 
-            <label class="field">
-              <span>Procedimento Realizado *</span>
-              <input type="text" name="description" id="calcDescription" placeholder="Ex.: Toxina Botulínica 50U + Preenchimento Labial" required>
-            </label>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+              <label class="field" style="margin:0">
+                <span>Procedimento Realizado *</span>
+                <input type="text" name="description" id="calcDescription" placeholder="Ex.: Toxina Botulínica 50U + Preenchimento Labial" required>
+              </label>
+              <label class="field" style="margin:0">
+                <span>Data do Procedimento *</span>
+                <input type="date" name="procedure_date" id="calcProcedureDate" value="${todayIso}" required>
+              </label>
+            </div>
 
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
               <label class="field">
                 <span>Valor Cobrado da Paciente (R$) *</span>
                 <input type="number" step="0.01" min="0" name="gross_value" id="calcGrossValue" placeholder="1200,00" required oninput="recalcProfit()">
@@ -2959,10 +3128,10 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
                 <th>Data</th>
                 <th>Procedimento / Pgto</th>
                 <th>Valor Bruto</th>
-                <th>Insumos</th>
                 <th>Taxa Cartão</th>
                 <th>Imposto 6%</th>
                 <th>Repasse Clínica 30%</th>
+                <th>Insumos</th>
                 <th>Lucro Líquido</th>
                 <th>Ação</th>
               </tr>
@@ -2972,6 +3141,12 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             </tbody>
           </table>
         </div>
+
+        ${dateTotalsHtml ? `
+        <div style="margin-top:20px">
+          <h4 style="margin:0 0 10px;font-size:0.95rem;color:var(--text)">📊 Total de Descontos e Repasses por Data:</h4>
+          ${dateTotalsHtml}
+        </div>` : ''}
       </div>
     </section>
   `;
@@ -3012,8 +3187,13 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
                   <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
                   <input type="hidden" name="returnPatient" value="${patient.id}">
                   ${appt.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar Consulta">Confirmar</button>` : ''}
-                  <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar Consulta">Cancelar</button>
+                  <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar Consulta" style="color:var(--muted)">Cancelar</button>
                 </form>` : '<span class="muted" style="font-size:0.8rem">Cancelada</span>'}
+                <form method="post" action="/admin/agenda/${appt.id}/delete" onsubmit="return confirm('Deseja excluir esta consulta permanentemente?')" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="hidden" name="returnPatient" value="${patient.id}">
+                  <button class="btn tiny danger" type="submit" title="Excluir consulta permanentemente">Excluir</button>
+                </form>
               </div>
             </td>
           </tr>
@@ -3636,6 +3816,11 @@ app.post('/admin/patients/:id/consents/:consentId/delete', requireAuth, (req, re
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.params.id);
   const consentId = Number(req.params.consentId);
+  const consent = db.prepare('SELECT id, status, is_signed FROM patient_consents WHERE id = ? AND patient_id = ?').get(consentId, patientId);
+  if (consent && (consent.is_signed || consent.status === 'signed')) {
+    res.status(400).send('Termos assinados não podem ser excluídos devido à guarda legal obrigatória (mínimo de 5 anos conforme CFO/CFM/LGPD).');
+    return;
+  }
   db.prepare('DELETE FROM patient_consents WHERE id = ? AND patient_id = ?').run(consentId, patientId);
   res.redirect(`/admin/patients/${patientId}?deleted_consent=1#termos`);
 });
@@ -3743,6 +3928,7 @@ app.post('/admin/patients/:id/financial', requireAuth, (req, res) => {
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.params.id);
   const description = String(req.body.description || '').trim() || 'Procedimento Realizado';
+  const procedureDate = String(req.body.procedure_date || '').trim().slice(0, 10) || nowIso().slice(0, 10);
   const grossValue = parseFloat(req.body.gross_value) || 0;
   const extraMaterials = parseFloat(req.body.extra_materials) || 0;
   const paymentMethod = String(req.body.payment_method || 'pix').trim();
@@ -3774,15 +3960,15 @@ app.post('/admin/patients/:id/financial', requireAuth, (req, res) => {
       card_fee_pct, card_fee_amount, value_after_card,
       tax_pct, tax_amount, value_after_tax,
       clinic_split_pct, clinic_split_amount, professional_subtotal,
-      net_profit, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      net_profit, procedure_date, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     patientId, description, paymentMethod, installments,
     calc.grossValue, calc.materialsCost, materialsJson,
     calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
     calc.taxPct, calc.taxAmount, calc.valueAfterTax,
     calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
-    calc.netProfit, nowIso()
+    calc.netProfit, procedureDate, nowIso()
   );
 
   res.redirect(`/admin/patients/${patientId}?saved_financial=1#financeiro`);
@@ -3906,6 +4092,11 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
                   ${event.status !== 'confirmed' ? `<button class="btn tiny" name="status" value="confirmed" title="Confirmar">✓</button>` : ''}
                   <button class="btn tiny danger" name="status" value="cancelled" title="Cancelar">✗</button>
                 </form>` : ''}
+                <form method="post" action="/admin/agenda/${event.id}/delete" onsubmit="return confirm('Deseja realmente excluir esta consulta da agenda?')" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+                  <input type="hidden" name="returnMonth" value="${escapeHtml(monthKey)}">
+                  <button class="btn tiny danger" type="submit" title="Excluir Consulta">🗑️</button>
+                </form>
               </div>
             </div>`;
         })
@@ -4506,6 +4697,16 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
   const productFiles = files.filter((file) => file.category === 'product');
   const examFiles = files.filter((file) => file.category === 'exam');
 
+  let clinicalAlerts = null;
+  try {
+    clinicalAlerts = submission.clinical_alerts_json ? JSON.parse(submission.clinical_alerts_json) : null;
+  } catch (_e) {}
+  if (!clinicalAlerts) {
+    clinicalAlerts = analyzeClinicalAnamnese(data);
+  }
+  const aiSummary = submission.ai_summary || '';
+  const clinicalAlertsHtml = renderClinicalAlertsCardHtml(clinicalAlerts, aiSummary, submission.id, submission.patient_id, req.session.csrfToken);
+
   const sectionsHtml = formSections
     .map((section) => {
       const rows = section.fields
@@ -4616,6 +4817,9 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
 
     ${renderAlert(req.query.upload === 'ok' ? 'Imagens adicionadas ao caso.' : null, 'success')}
     ${renderAlert(req.query.uploadError || null, 'error')}
+    ${renderAlert(req.query.analyzed ? 'Análise clínica da IA atualizada com sucesso!' : null, 'success')}
+
+    ${clinicalAlertsHtml}
 
     <section class="panel answer-panel">
       <h2>Adicionar mais fotos ao caso</h2>
@@ -4648,6 +4852,24 @@ app.get('/admin/submissions/:id', requireAuth, (req, res) => {
   `;
 
   res.send(layout({ title: `Resposta ${submissionId}`, body, userEmail: req.session.adminEmail }));
+});
+
+app.post('/admin/submissions/:id/analyze', requireAuth, async (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const submissionId = Number(req.params.id);
+  const sub = db.prepare('SELECT patient_id FROM submissions WHERE id = ?').get(submissionId);
+  await ensureSubmissionAiAnalysis(submissionId, sub ? sub.patient_id : null, true);
+  res.redirect(`/admin/submissions/${submissionId}?analyzed=1`);
+});
+
+app.post('/admin/patients/:id/analyze-anamnese', requireAuth, async (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.params.id);
+  const latestSub = db.prepare('SELECT id FROM submissions WHERE patient_id = ? ORDER BY created_at DESC LIMIT 1').get(patientId);
+  if (latestSub) {
+    await ensureSubmissionAiAnalysis(latestSub.id, patientId, true);
+  }
+  res.redirect(`/admin/patients/${patientId}?analyzed_ai=1#anamnese`);
 });
 
 app.post('/admin/submissions/:id/files', requireAuth, (req, res) => {
@@ -5064,32 +5286,281 @@ function buildGlobalKnowledgeBase() {
   return JSON.stringify(compact);
 }
 
-async function triggerAutoAnalysis(submissionId, patientId) {
-  if (!submissionId) return;
+function analyzeClinicalAnamnese(data) {
+  if (!data || typeof data !== 'object') return { critical: [], warning: [], allergies: [], info: [] };
+  const critical = [];
+  const warning = [];
+  const allergies = [];
+  const info = [];
 
-  // Evita re-análise se já existe alguma mensagem para este caso
-  const existing = db.prepare('SELECT id FROM chat_messages WHERE submission_id = ? LIMIT 1').get(submissionId);
-  if (existing) return;
+  // 1. Gestante / Lactante
+  const gestante = String(data.gestanteLactante || data.gravidaOuAmamentando || '').toLowerCase();
+  if (gestante.includes('sim') || gestante.includes('gestante') || gestante.includes('lactante')) {
+    critical.push({
+      title: 'Gestante ou Lactante Declarada',
+      desc: 'Contraindicação para Toxina Botulínica, Ácido Hialurônico, Bioestimuladores e Lasers invasivos.'
+    });
+  }
 
-  const admin = db.prepare('SELECT id FROM admins ORDER BY id ASC LIMIT 1').get();
-  if (!admin) return;
+  // 2. Roacutan / Isotretinoína nos últimos 12 meses
+  const roacutan = String(data.roacutanUltimos12Meses || '').toLowerCase();
+  if (roacutan.includes('sim')) {
+    critical.push({
+      title: 'Uso de Roacutan (Isotretinoína) nos últimos 12 meses',
+      desc: 'Fragilidade tecidual e risco aumentado de cicatrização atípica e hiperpigmentação pós-inflamatória. Evitar peelings médios/profundos e lasers ablativos.'
+    });
+  }
 
-  const prompt = [
-    'Faça uma pré-análise completa da ficha desta paciente.',
-    'Organize em tópicos claros:',
-    '1) Perfil da pele e queixas principais',
-    '2) Avaliação dos produtos em uso (são adequados para as queixas e tipo de pele?)',
-    '3) Pontos de atenção (ingredientes conflitantes, riscos, alergias reportadas)',
-    '4) Sugestões iniciais de rotina (AM e PM)',
-    '5) Perguntas que a profissional pode querer aprofundar na consulta.',
-    'Use bullet points. Seja clara e objetiva para uma esteticista clínica.'
-  ].join(' ');
+  // 3. PMMA prévio
+  const procsAnteriores = Array.isArray(data.procedimentosAnteriores)
+    ? data.procedimentosAnteriores.join(' ')
+    : String(data.procedimentosAnteriores || '');
+  if (procsAnteriores.toLowerCase().includes('pmma')) {
+    critical.push({
+      title: 'Histórico de PMMA Definitivo',
+      desc: 'Risco severo de reação granulomatosa e biofilme crônico. Contraindicado injetar novos preenchedores ou bioestimuladores no mesmo plano/região.'
+    });
+  }
 
-  const analysis = await callLlm(prompt, submissionId, patientId);
+  // 4. Alergias a Anestésicos / Lidocaína
+  const alergiasList = Array.isArray(data.alergiasConhecidas)
+    ? data.alergiasConhecidas
+    : [String(data.alergiasConhecidas || '')];
+  const alergiasStr = alergiasList.join(' ').toLowerCase();
+  if (alergiasStr.includes('anestésicos') || alergiasStr.includes('lidocaína')) {
+    critical.push({
+      title: 'Alergia a Anestésicos Locais (Lidocaína)',
+      desc: 'Preenchedores com lidocaína integrada não devem ser utilizados. Realizar procedimentos com produtos 100% livres de anestésico ou sem bloqueio com amidas.'
+    });
+  }
+
+  // 5. Outras alergias conhecidas
+  if (alergiasStr.includes('látex')) {
+    warning.push({
+      title: 'Alergia ao Látex',
+      desc: 'Utilizar exclusivamente luvas de nitrila/vinil e insumos estéreis livres de látex durante todo o atendimento.'
+    });
+  }
+  if (alergiasStr.includes('iodo') || alergiasStr.includes('frutos do mar')) {
+    warning.push({
+      title: 'Alergia a Iodo / Frutos do Mar',
+      desc: 'Não utilizar antissépticos à base de iodo (PVPI). Realizar antissepsia com clorexidina alcoólica a 0,5% ou aquosa.'
+    });
+  }
+  if (alergiasStr.includes('dipirona') || alergiasStr.includes('anti-inflamatórios') || alergiasStr.includes('aas')) {
+    warning.push({
+      title: 'Sensibilidade a AINEs / Dipirona / AAS',
+      desc: 'Prescrever alternativas analgésicas apropriadas (ex.: Paracetamol) no pós-procedimento.'
+    });
+  }
+  if (data.outrasAlergias && String(data.outrasAlergias).trim()) {
+    allergies.push({
+      title: 'Outras Alergias Declaradas',
+      desc: String(data.outrasAlergias).trim()
+    });
+  }
+
+  // 6. Condições de saúde e antecedentes
+  const condicoesList = Array.isArray(data.condicoesSaude)
+    ? data.condicoesSaude
+    : [String(data.condicoesSaude || '')];
+  const condicoesStr = condicoesList.join(' ').toLowerCase();
+
+  // Herpes
+  if (condicoesStr.includes('herpes') || (data.ultimoEpisodioHerpes && String(data.ultimoEpisodioHerpes).trim())) {
+    warning.push({
+      title: 'Histórico de Herpes Labial / Facial',
+      desc: `Último episódio: ${escapeHtml(data.ultimoEpisodioHerpes || 'Relatado na ficha')}. Indicar profilaxia antiviral (ex.: Aciclovir/Valaciclovir) antes de preenchimento labial ou laser Lavieen.`
+    });
+  }
+
+  // Doenças Autoimunes
+  if (condicoesStr.includes('autoimune') || condicoesStr.includes('lúpus') || condicoesStr.includes('hashimoto')) {
+    warning.push({
+      title: 'Doença Autoimune Declarada (Lúpus, Hashimoto, etc.)',
+      desc: 'Avaliar estabilidade e remissão clínica. Cautela reforçada com bioestimuladores de colágeno.'
+    });
+  }
+
+  // Distúrbios de coagulação ou anticoagulantes
+  const usoRecente = Array.isArray(data.usoRecente15Dias) ? data.usoRecente15Dias.join(' ') : String(data.usoRecente15Dias || '');
+  if (condicoesStr.includes('coagulação') || condicoesStr.includes('trombose') || usoRecente.toLowerCase().includes('anticoagulantes') || usoRecente.toLowerCase().includes('aas')) {
+    warning.push({
+      title: 'Distúrbio de Coagulação ou Uso de Anticoagulantes / AAS',
+      desc: 'Maior propensão a sangramento ativo e formação de hematomas/equimoses. Realizar compressão pós-punção prolongada.'
+    });
+  }
+
+  // Queloides / Cicatrização hipertrófica
+  if (condicoesStr.includes('queloide') || condicoesStr.includes('cicatriz hipertrófica')) {
+    warning.push({
+      title: 'Tendência a Queloides / Cicatriz Hipertrófica',
+      desc: 'Evitar pertuitos traumáticos e tecnologias ablativas agressivas.'
+    });
+  }
+
+  // Próteses / Placas metálicas
+  if (condicoesStr.includes('placas metálicas') || (data.protesesPlacasOnde && String(data.protesesPlacasOnde).trim())) {
+    warning.push({
+      title: 'Próteses ou Placas Metálicas na Face',
+      desc: `Região: ${escapeHtml(data.protesesPlacasOnde || 'Face')}. Não aplicar disparos de ultrassom microfocado ou radiofrequência sobre o local.`
+    });
+  }
+
+  // Hipertensão / Diabetes
+  if (condicoesStr.includes('hipertensão')) {
+    info.push({
+      title: 'Hipertensão Arterial',
+      desc: 'Verificar pressão no atendimento. Cautela com vasoconstritores em anestésicos.'
+    });
+  }
+  if (condicoesStr.includes('diabetes')) {
+    info.push({
+      title: 'Diabetes Mellitus',
+      desc: 'Cicatrização mais lenta e suscetibilidade aumentada a infecções cutâneas.'
+    });
+  }
+
+  // Medicações contínuas
+  if (data.medicamentosContinuos && String(data.medicamentosContinuos).trim()) {
+    info.push({
+      title: 'Medicamentos de Uso Contínuo',
+      desc: String(data.medicamentosContinuos).trim()
+    });
+  }
+
+  return { critical, warning, allergies, info };
+}
+
+function renderClinicalAlertsCardHtml(analysis, aiSummary, submissionId, patientId, csrfToken) {
+  const hasCritical = analysis.critical && analysis.critical.length > 0;
+  const hasWarning = analysis.warning && analysis.warning.length > 0;
+  const hasAllergies = analysis.allergies && analysis.allergies.length > 0;
+  const hasInfo = analysis.info && analysis.info.length > 0;
+
+  const criticalItems = hasCritical
+    ? analysis.critical.map((c) => `
+        <div style="background:#fef2f2;border-left:4px solid #ef4444;padding:8px 12px;border-radius:6px;margin-bottom:6px">
+          <strong style="color:#b91c1c;font-size:0.88rem">🚨 ${escapeHtml(c.title)}</strong>
+          <p style="margin:2px 0 0;font-size:0.82rem;color:#7f1d1d">${escapeHtml(c.desc)}</p>
+        </div>
+      `).join('')
+    : '';
+
+  const warningItems = hasWarning
+    ? analysis.warning.map((w) => `
+        <div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;border-radius:6px;margin-bottom:6px">
+          <strong style="color:#b45309;font-size:0.88rem">⚠️ ${escapeHtml(w.title)}</strong>
+          <p style="margin:2px 0 0;font-size:0.82rem;color:#78350f">${escapeHtml(w.desc)}</p>
+        </div>
+      `).join('')
+    : '';
+
+  const allergyItems = hasAllergies
+    ? analysis.allergies.map((a) => `
+        <div style="background:#fdf4ff;border-left:4px solid #c026d3;padding:8px 12px;border-radius:6px;margin-bottom:6px">
+          <strong style="color:#86198f;font-size:0.88rem">🧪 ${escapeHtml(a.title)}</strong>
+          <p style="margin:2px 0 0;font-size:0.82rem;color:#581c87">${escapeHtml(a.desc)}</p>
+        </div>
+      `).join('')
+    : '';
+
+  const infoItems = hasInfo
+    ? analysis.info.map((i) => `
+        <div style="background:#f8fafc;border-left:4px solid #64748b;padding:8px 12px;border-radius:6px;margin-bottom:6px">
+          <strong style="color:#334155;font-size:0.88rem">💊 ${escapeHtml(i.title)}</strong>
+          <p style="margin:2px 0 0;font-size:0.82rem;color:#475569">${escapeHtml(i.desc)}</p>
+        </div>
+      `).join('')
+    : '';
+
+  const reanalyzeUrl = submissionId
+    ? `/admin/submissions/${submissionId}/analyze`
+    : `/admin/patients/${patientId}/analyze-anamnese`;
+
+  return `
+    <div class="clinical-alerts-card" style="background:#ffffff;border:2px solid ${hasCritical ? '#fca5a5' : hasWarning ? '#fcd34d' : '#86efac'};border-radius:14px;padding:16px 20px;margin-bottom:20px;box-shadow:0 4px 12px rgba(0,0,0,0.04)">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:1.4rem">🤖</span>
+          <div>
+            <h3 style="margin:0;font-size:1.05rem;color:var(--text)">Alertas Clínicos & Triagem de Riscos da IA</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:0.78rem">Pontos críticos de saúde, alergias e contraindicações para procedimentos de HOF</p>
+          </div>
+        </div>
+        <form method="post" action="${escapeHtml(reanalyzeUrl)}" style="margin:0">
+          <input type="hidden" name="_csrf" value="${escapeHtml(csrfToken)}">
+          <button class="btn tiny gold" type="submit" title="Executar síntese clínica com modelo de inteligência artificial">
+            ✨ Atualizar Parecer da IA
+          </button>
+        </form>
+      </div>
+
+      ${!hasCritical && !hasWarning && !hasAllergies && !hasInfo ? `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 14px;border-radius:8px;margin-bottom:10px">
+          <span style="color:#15803d;font-weight:600;font-size:0.88rem">✅ Nenhum fator de risco crítico impeditivo detectado nas respostas da paciente.</span>
+        </div>
+      ` : ''}
+
+      ${criticalItems}
+      ${warningItems}
+      ${allergyItems}
+      ${infoItems}
+
+      ${aiSummary ? `
+        <div style="margin-top:14px;background:#faf8f5;border:1px solid #ede4da;padding:12px 16px;border-radius:10px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <span style="font-size:0.9rem">✨</span>
+            <strong style="font-size:0.88rem;color:var(--accent)">Parecer Clínico da IA para a Dra. Fran:</strong>
+          </div>
+          <div style="font-size:0.84rem;line-height:1.5;color:var(--text);white-space:pre-wrap">${escapeHtml(aiSummary)}</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function ensureSubmissionAiAnalysis(submissionId, patientId, forceRefresh = false) {
+  if (!submissionId) return null;
+  const submission = db.prepare('SELECT id, patient_id, data_json, ai_summary, clinical_alerts_json FROM submissions WHERE id = ?').get(submissionId);
+  if (!submission) return null;
+
+  const data = JSON.parse(submission.data_json || '{}');
+  const analysis = analyzeClinicalAnamnese(data);
+  const analysisJson = JSON.stringify(analysis);
+
+  let aiSummary = submission.ai_summary || '';
+
+  if (forceRefresh || !aiSummary) {
+    try {
+      const prompt = [
+        'Você é o assistente clínico especializado em Harmonização Orofacial (HOF) da Dra. Fransuele Hanel (CRBM-5: 015427).',
+        'Analise as respostas da anamnese preenchida desta paciente e elabore um parecer clínico conciso e objetivo:',
+        '1) RISCOS E CONTRAINDICAÇÕES: destaque qualquer ponto de risco (doenças, alergias a anestésicos/lidocaína, gestação, roacutan nos últimos 12 meses, PMMA prévio, etc.).',
+        '2) PONTOS DE ATENÇÃO PARA HOF: cuidados com toxina botulínica, preenchedores de ácido hialurônico, bioestimuladores e lasers (ex: profilaxia antiviral de herpes se for preencher lábios).',
+        '3) SÍNTESE DA QUEIXA E EXPECTATIVA: o que a paciente busca e como alinhar.',
+        'Seja direta, profissional e estruturada com tópicos claros e objetivos.'
+      ].join(' ');
+
+      const responseText = await callLlm(prompt, submissionId, patientId || submission.patient_id);
+      if (responseText) {
+        aiSummary = responseText;
+      }
+    } catch (err) {
+      console.error('[ai-analysis-error]', err.message);
+    }
+  }
 
   db.prepare(
-    'INSERT INTO chat_messages (admin_id, patient_id, submission_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(admin.id, patientId, submissionId, 'assistant', `📋 Pré-análise automática\n\n${analysis}`, nowIso());
+    'UPDATE submissions SET clinical_alerts_json = ?, ai_summary = ? WHERE id = ?'
+  ).run(analysisJson, aiSummary, submissionId);
+
+  return { analysis, aiSummary };
+}
+
+async function triggerAutoAnalysis(submissionId, patientId) {
+  if (!submissionId) return;
+  await ensureSubmissionAiAnalysis(submissionId, patientId, true);
 }
 
 async function callLlm(currentMessage, submissionId, patientId) {
@@ -5384,6 +5855,38 @@ app.post('/admin/agenda/:id/status', requireAuth, (req, res) => {
 
   const month = returnMonth || String(appointment.start_at || '').slice(0, 7) || monthKeyFromDate(new Date());
   res.redirect(`/admin/agenda?month=${encodeURIComponent(month)}&updated=1`);
+});
+
+// ─── Agenda: excluir consulta ─────────────────────────────────────────────
+app.post('/admin/agenda/:id/delete', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const appointmentId = Number(req.params.id);
+  const returnPatient = Number(req.body.returnPatient || req.query.returnPatient || 0) || null;
+  const returnMonth = String(req.body.returnMonth || req.query.returnMonth || '').trim();
+
+  const appointment = db.prepare('SELECT * FROM appointments WHERE id = ?').get(appointmentId);
+  if (!appointment) {
+    if (returnPatient) {
+      res.redirect(`/admin/patients/${returnPatient}#agenda`);
+    } else {
+      res.redirect('/admin/agenda');
+    }
+    return;
+  }
+
+  db.prepare('DELETE FROM appointments WHERE id = ?').run(appointmentId);
+
+  if (returnPatient) {
+    res.redirect(`/admin/patients/${returnPatient}?deleted_appt=1#agenda`);
+    return;
+  }
+
+  const month = returnMonth || String(appointment.start_at || '').slice(0, 7) || monthKeyFromDate(new Date());
+  res.redirect(`/admin/agenda?month=${encodeURIComponent(month)}&deleted=1`);
 });
 
 // ─── Submissão: view de impressão / PDF ───────────────────────────────────
@@ -6172,6 +6675,34 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
   const dateFrom = String(req.query.dateFrom || `${currentMonthKey}-01`).slice(0, 10);
   const dateTo = String(req.query.dateTo || `${currentMonthKey}-${String(lastDay).padStart(2, '0')}`).slice(0, 10);
 
+  const [toYearStr, toMonthStr] = dateTo.split('-');
+  const toYear = parseInt(toYearStr, 10) || now.getFullYear();
+  const toMonth = parseInt(toMonthStr, 10) || (now.getMonth() + 1);
+  const nextYear = toMonth === 12 ? toYear + 1 : toYear;
+  const nextMonth = toMonth === 12 ? 1 : toMonth + 1;
+  const fifthBusinessDay = getFifthBusinessDay(nextYear, nextMonth);
+  const dayNames = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+  const fifthDayFormatted = `${String(fifthBusinessDay.getDate()).padStart(2, '0')}/${String(fifthBusinessDay.getMonth() + 1).padStart(2, '0')}/${fifthBusinessDay.getFullYear()} (${dayNames[fifthBusinessDay.getDay()]})`;
+
+  const monthButtons = [];
+  for (let i = 0; i < 6; i++) {
+    const mDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const mYear = mDate.getFullYear();
+    const mMonth = String(mDate.getMonth() + 1).padStart(2, '0');
+    const mKey = `${mYear}-${mMonth}`;
+    const mLastDate = new Date(mYear, mDate.getMonth() + 1, 0).getDate();
+    const mFirst = `${mKey}-01`;
+    const mLast = `${mKey}-${String(mLastDate).padStart(2, '0')}`;
+    const isActive = (dateFrom === mFirst && dateTo === mLast);
+    const mName = mDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const mCap = mName.charAt(0).toUpperCase() + mName.slice(1);
+    monthButtons.push(`
+      <a href="/admin/financeiro?dateFrom=${mFirst}&dateTo=${mLast}" class="btn ${isActive ? 'primary' : 'ghost'} tiny" style="white-space:nowrap;font-weight:600">
+        ${escapeHtml(mCap)}
+      </a>
+    `);
+  }
+
   const totals = db
     .prepare(
       `
@@ -6184,7 +6715,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         COALESCE(SUM(clinic_split_amount), 0) AS total_clinic_split,
         COALESCE(SUM(net_profit), 0) AS total_net_profit
       FROM procedure_financials
-      WHERE date(created_at) BETWEEN ? AND ?
+      WHERE COALESCE(NULLIF(procedure_date, ''), date(created_at)) BETWEEN ? AND ?
       `
     )
     .get(dateFrom, dateTo);
@@ -6195,8 +6726,8 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
       SELECT pf.*, p.full_name AS patient_name, p.patient_code
       FROM procedure_financials pf
       LEFT JOIN patients p ON p.id = pf.patient_id
-      WHERE date(pf.created_at) BETWEEN ? AND ?
-      ORDER BY pf.created_at DESC
+      WHERE COALESCE(NULLIF(pf.procedure_date, ''), date(pf.created_at)) BETWEEN ? AND ?
+      ORDER BY COALESCE(NULLIF(pf.procedure_date, ''), date(pf.created_at)) DESC, pf.created_at DESC
       `
     )
     .all(dateFrom, dateTo);
@@ -6222,19 +6753,24 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         .map((e) => {
           const payLabel = e.payment_method ? e.payment_method.toUpperCase().replace('_', ' ') : 'PIX';
           const instLabel = e.installments && e.installments > 1 ? ` (${e.installments}x)` : '';
+          const procDate = e.procedure_date || (e.created_at ? e.created_at.slice(0, 10) : '');
+          const displayDate = procDate ? formatDateBR(procDate) : formatDateTime(e.created_at);
           return `
             <tr>
-              <td>${escapeHtml(formatDateTime(e.created_at))}</td>
+              <td>
+                <strong>${escapeHtml(displayDate)}</strong>
+                ${e.created_at && e.procedure_date ? `<div style="font-size:0.72rem;color:var(--muted)">lançado ${escapeHtml(e.created_at.slice(11, 16))}</div>` : ''}
+              </td>
               <td>${e.patient_name ? `<a href="/admin/patients/${e.patient_id}"><strong>${escapeHtml(e.patient_name)}</strong></a>` : '<span class="muted">Avulso</span>'}</td>
               <td>
                 <strong>${escapeHtml(e.description)}</strong>
                 <div style="font-size:0.75rem;color:var(--muted)">${escapeHtml(payLabel + instLabel)}</div>
               </td>
               <td><strong>R$ ${escapeHtml(formatBRL(e.gross_value))}</strong></td>
+              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.card_fee_amount))} <span style="font-size:0.75rem">(${e.card_fee_pct}%)</span></td>
+              <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(e.tax_amount))} <span style="font-size:0.75rem">(${e.tax_pct || 6}%)</span></td>
+              <td style="color:#9a3412;font-weight:600">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))} <span style="font-size:0.75rem">(${e.clinic_split_pct || 30}%)</span></td>
               <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(e.materials_cost))}</td>
-              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.card_fee_amount))} (${e.card_fee_pct}%)</td>
-              <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(e.tax_amount))} (6%)</td>
-              <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))} (30%)</td>
               <td style="color:#15803d;font-weight:700;font-size:0.95rem">R$ ${escapeHtml(formatBRL(e.net_profit))}</td>
               <td>
                 <form method="post" action="/admin/financial/${e.id}/delete" onsubmit="return confirm('Excluir este lançamento financeiro?')" style="margin:0">
@@ -6267,17 +6803,26 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
     ${renderAlert(req.query.rates_saved ? 'Taxas de cartão atualizadas com sucesso!' : null, 'success')}
     ${renderAlert(req.query.deleted ? 'Registro financeiro excluído.' : null, 'info')}
 
-    <!-- Filtro de Período -->
-    <section class="panel">
-      <form method="get" action="/admin/financeiro" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-weight:700;font-size:0.9rem;color:var(--text)">Filtrar por período:</span>
-        <div class="date-time-pair" style="max-width:320px">
-          <input type="date" name="dateFrom" value="${escapeHtml(dateFrom)}">
-          <input type="date" name="dateTo" value="${escapeHtml(dateTo)}">
+    <!-- Filtro de Período & Navegação por Meses -->
+    <section class="panel no-print">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <form method="get" action="/admin/financeiro" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-weight:700;font-size:0.9rem;color:var(--text)">Filtrar por período:</span>
+            <div class="date-time-pair" style="max-width:320px">
+              <input type="date" name="dateFrom" value="${escapeHtml(dateFrom)}">
+              <input type="date" name="dateTo" value="${escapeHtml(dateTo)}">
+            </div>
+            <button class="btn primary tiny" type="submit">Filtrar</button>
+            <a class="btn ghost tiny" href="/admin/financeiro">Mês Atual</a>
+          </form>
+
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="font-size:0.8rem;color:var(--muted);font-weight:600">Meses:</span>
+            ${monthButtons.join('')}
+          </div>
         </div>
-        <button class="btn primary" type="submit">Filtrar</button>
-        <a class="btn ghost" href="/admin/financeiro">Mês Atual</a>
-      </form>
+      </div>
     </section>
 
     <!-- Indicadores Principais (KPIs) -->
@@ -6289,21 +6834,27 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
       </article>
 
       <article class="kpi-card">
+        <span>Taxas de Cartão</span>
+        <strong style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(totals.total_card_fee))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Ton Black / Maquininhas</span>
+      </article>
+
+      <article class="kpi-card">
+        <span>Impostos (6%)</span>
+        <strong style="color:#b45309">- R$ ${escapeHtml(formatBRL(totals.total_tax))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">NF sobre líq. cartão</span>
+      </article>
+
+      <article class="kpi-card" style="border-left: 3px solid #ea580c">
+        <span>Repasse para Clínica (30%)</span>
+        <strong style="color:#9a3412">- R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}</strong>
+        <span style="font-size:0.75rem;margin-top:2px">Acerto 5º dia útil</span>
+      </article>
+
+      <article class="kpi-card">
         <span>Custo de Materiais</span>
         <strong style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(totals.total_materials))}</strong>
         <span style="font-size:0.75rem;margin-top:2px">Insumos aplicados</span>
-      </article>
-
-      <article class="kpi-card">
-        <span>Impostos & Cartão</span>
-        <strong style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(totals.total_tax + totals.total_card_fee))}</strong>
-        <span style="font-size:0.75rem;margin-top:2px">Taxas operacionais</span>
-      </article>
-
-      <article class="kpi-card">
-        <span>Repasse para Clínica</span>
-        <strong style="color:#9a3412">- R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}</strong>
-        <span style="font-size:0.75rem;margin-top:2px">Espaço / Comissão</span>
       </article>
 
       <article class="kpi-card highlight">
@@ -6313,8 +6864,91 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
       </article>
     </div>
 
+    <!-- Demonstrativo de Fechamento & Acerto da Clínica (5º Dia Útil) -->
+    <section class="panel fechamento-card" style="border: 2px solid var(--gold-mid, #d4af37); background: linear-gradient(135deg, rgba(212,175,55,0.05) 0%, rgba(26,26,26,0.01) 100%);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;margin-bottom:18px">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:1.8rem">🏢</span>
+            <div>
+              <h2 style="margin:0;font-family:var(--font-heading, Cinzel, serif);color:var(--gold-dark, #b45309)">Demonstrativo de Fechamento & Acerto da Clínica</h2>
+              <p class="muted" style="margin:3px 0 0;font-size:0.88rem">
+                Período apurado: <strong>${escapeHtml(formatDateBR(dateFrom))} até ${escapeHtml(formatDateBR(dateTo))}</strong> • Acerto oficial todo <strong>5º Dia Útil</strong> do mês subsequente
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="no-print">
+          <button type="button" class="btn ghost tiny" onclick="window.print()" style="display:inline-flex;align-items:center;gap:6px">
+            <span>🖨️</span> Imprimir Demonstrativo / PDF
+          </button>
+        </div>
+      </div>
+
+      <!-- Cards de Destaque: Repasse Clínica vs Lucro Fran -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;margin-bottom:20px">
+        <div style="background:rgba(154,52,18,0.08);border:1.5px solid #ea580c;border-radius:10px;padding:18px 20px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;color:#9a3412;font-weight:700">🏢 VALOR A PAGAR À CLÍNICA (30%)</span>
+            <span style="background:#ea580c;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:700">5º DIA ÚTIL</span>
+          </div>
+          <div style="font-size:2.1rem;font-weight:800;color:#9a3412;margin:10px 0 4px">
+            R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}
+          </div>
+          <div style="font-size:0.83rem;color:var(--muted)">
+            🗓️ Previsão de Pagamento: <strong style="color:var(--text)">${escapeHtml(fifthDayFormatted)}</strong>
+          </div>
+        </div>
+
+        <div style="background:rgba(21,128,61,0.08);border:1.5px solid #16a34a;border-radius:10px;padding:18px 20px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;color:#15803d;font-weight:700">💎 LUCRO LÍQUIDO FINAL FRAN</span>
+            <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:700">LÍQUIDO REAL</span>
+          </div>
+          <div style="font-size:2.1rem;font-weight:800;color:#15803d;margin:10px 0 4px">
+            R$ ${escapeHtml(formatBRL(totals.total_net_profit))}
+          </div>
+          <div style="font-size:0.83rem;color:var(--muted)">
+            Subtotal profissional deduzido do custo integral de insumos
+          </div>
+        </div>
+      </div>
+
+      <!-- Resumo Detalhado das Deduções Oficiais -->
+      <div style="background:var(--surface, #fff);border:1px solid var(--border);border-radius:8px;padding:14px 18px">
+        <div style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);font-weight:700;margin-bottom:10px">Ordem Correta das Deduções & Rateios</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px">
+          <div style="padding:8px 12px;border-radius:6px;background:rgba(0,0,0,0.02)">
+            <div style="font-size:0.75rem;color:var(--muted)">1. Faturamento Bruto</div>
+            <div style="font-size:1.05rem;font-weight:700;color:var(--text);margin-top:2px">R$ ${escapeHtml(formatBRL(totals.total_gross))}</div>
+            <div style="font-size:0.7rem;color:var(--muted)">100% cobrado</div>
+          </div>
+          <div style="padding:8px 12px;border-radius:6px;background:rgba(0,0,0,0.02)">
+            <div style="font-size:0.75rem;color:var(--muted)">2. (-) Taxas de Cartão</div>
+            <div style="font-size:1.05rem;font-weight:700;color:var(--muted);margin-top:2px">- R$ ${escapeHtml(formatBRL(totals.total_card_fee))}</div>
+            <div style="font-size:0.7rem;color:var(--muted)">Operacional</div>
+          </div>
+          <div style="padding:8px 12px;border-radius:6px;background:rgba(0,0,0,0.02)">
+            <div style="font-size:0.75rem;color:var(--muted)">3. (-) Imposto (6%)</div>
+            <div style="font-size:1.05rem;font-weight:700;color:#b45309;margin-top:2px">- R$ ${escapeHtml(formatBRL(totals.total_tax))}</div>
+            <div style="font-size:0.7rem;color:var(--muted)">Sobre líq. cartão</div>
+          </div>
+          <div style="padding:8px 12px;border-radius:6px;background:rgba(154,52,18,0.06);border:1px dashed #ea580c">
+            <div style="font-size:0.75rem;color:#9a3412;font-weight:700">4. (-) Clínica (30%)</div>
+            <div style="font-size:1.05rem;font-weight:800;color:#9a3412;margin-top:2px">- R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}</div>
+            <div style="font-size:0.7rem;color:#9a3412">Acerto 5º Dia Útil</div>
+          </div>
+          <div style="padding:8px 12px;border-radius:6px;background:rgba(0,0,0,0.02)">
+            <div style="font-size:0.75rem;color:var(--muted)">5. (-) Insumos</div>
+            <div style="font-size:1.05rem;font-weight:700;color:var(--danger);margin-top:2px">- R$ ${escapeHtml(formatBRL(totals.total_materials))}</div>
+            <div style="font-size:0.7rem;color:var(--muted)">Materiais aplicados</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Calculadora e Novo Lançamento -->
-    <section class="panel">
+    <section class="panel no-print">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
         <div>
           <h2 style="margin:0">Novo Registro / Calculadora de Procedimento</h2>
@@ -6333,8 +6967,14 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
             <input type="hidden" name="card_fee_amount" id="mainCalcCardFeeAmount" value="0">
             <input type="hidden" name="clinic_split_amount" id="mainCalcClinicSplitAmount" value="0">
             <input type="hidden" name="net_profit" id="mainCalcNetProfitHidden" value="0">
+            <input type="hidden" name="returnUrl" value="/admin/financeiro?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}">
 
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:12px">
+              <label class="field">
+                <span>Data *</span>
+                <input type="date" name="procedure_date" value="${nowIso().slice(0, 10)}" required>
+              </label>
+
               <label class="field">
                 <span>Paciente (opcional)</span>
                 <select name="patientId">
@@ -6515,7 +7155,10 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
 
     <!-- Tabela de Lançamentos do Período -->
     <section class="panel">
-      <h2>Procedimentos Registrados no Período</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+        <h2 style="margin:0">Procedimentos Registrados no Período</h2>
+        <span class="muted" style="font-size:0.84rem">${totals.total_procedures} procedimento(s) apurado(s)</span>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -6524,20 +7167,67 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
               <th>Paciente</th>
               <th>Procedimento / Pgto</th>
               <th>Valor Bruto</th>
-              <th>Insumos</th>
               <th>Taxa Cartão</th>
-              <th>Imposto 6%</th>
-              <th>Repasse Clínica 30%</th>
+              <th>Imposto (6%)</th>
+              <th>Repasse Clínica (30%)</th>
+              <th>Insumos</th>
               <th>Lucro Líquido</th>
-              <th>Ação</th>
+              <th class="no-print">Ação</th>
             </tr>
           </thead>
           <tbody>
             ${rows}
           </tbody>
+          <tfoot>
+            <tr style="font-weight:bold;background:rgba(212,175,55,0.06);border-top:2px solid var(--border)">
+              <td colspan="3" style="text-align:right"><strong>TOTAIS (${totals.total_procedures} atendimentos):</strong></td>
+              <td><strong>R$ ${escapeHtml(formatBRL(totals.total_gross))}</strong></td>
+              <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(totals.total_card_fee))}</td>
+              <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(totals.total_tax))}</td>
+              <td style="color:#9a3412"><strong>- R$ ${escapeHtml(formatBRL(totals.total_clinic_split))}</strong></td>
+              <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(totals.total_materials))}</td>
+              <td style="color:#15803d;font-size:1.02rem"><strong>R$ ${escapeHtml(formatBRL(totals.total_net_profit))}</strong></td>
+              <td class="no-print"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </section>
+
+    <style>
+      @media print {
+        .top-nav, .header-panel .header-actions, .no-print, form, #taxas-cartao, .calc-container, .btn {
+          display: none !important;
+        }
+        body {
+          background: #fff !important;
+          color: #000 !important;
+        }
+        .page-shell {
+          max-width: 100% !important;
+          padding: 0 !important;
+        }
+        .panel {
+          border: 1px solid #ccc !important;
+          box-shadow: none !important;
+          background: #fff !important;
+          margin-bottom: 20px !important;
+          padding: 16px !important;
+        }
+        table {
+          width: 100% !important;
+        }
+        table th, table td {
+          color: #000 !important;
+          border-color: #ddd !important;
+          font-size: 0.8rem !important;
+          padding: 6px 8px !important;
+        }
+        .fechamento-card {
+          border: 2px solid #b45309 !important;
+        }
+      }
+    </style>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
       <!-- Configuração de Alíquotas Padrão -->
@@ -6824,6 +7514,7 @@ app.post('/admin/financeiro/entry', requireAuth, (req, res) => {
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.body.patientId || 0) || null;
   const description = String(req.body.description || '').trim() || 'Lançamento Financeiro';
+  const procedureDate = String(req.body.procedure_date || '').trim().slice(0, 10) || nowIso().slice(0, 10);
   const grossValue = parseFloat(req.body.gross_value) || 0;
   const extraMaterials = parseFloat(req.body.extra_materials) || 0;
   const paymentMethod = String(req.body.payment_method || 'pix').trim();
@@ -6855,18 +7546,23 @@ app.post('/admin/financeiro/entry', requireAuth, (req, res) => {
       card_fee_pct, card_fee_amount, value_after_card,
       tax_pct, tax_amount, value_after_tax,
       clinic_split_pct, clinic_split_amount, professional_subtotal,
-      net_profit, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      net_profit, procedure_date, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     patientId, description, paymentMethod, installments,
     calc.grossValue, calc.materialsCost, materialsJson,
     calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
     calc.taxPct, calc.taxAmount, calc.valueAfterTax,
     calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
-    calc.netProfit, nowIso()
+    calc.netProfit, procedureDate, nowIso()
   );
 
-  res.redirect('/admin/financeiro?saved=1');
+  const returnUrl = String(req.body.returnUrl || '').trim();
+  if (returnUrl && returnUrl.startsWith('/admin/financeiro')) {
+    res.redirect(returnUrl + (returnUrl.includes('?') ? '&' : '?') + 'saved=1');
+  } else {
+    res.redirect('/admin/financeiro?saved=1');
+  }
 });
 
 app.post('/admin/financeiro/card-rates', requireAuth, (req, res) => {
