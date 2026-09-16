@@ -463,6 +463,21 @@ function ensureNewClinicalAndFinancialTables() {
     db.exec("ALTER TABLE submissions ADD COLUMN clinical_alerts_json TEXT DEFAULT ''");
   }
 
+  // Migração: marcar como respondidos todos os links de pacientes que já possuem questionário enviado
+  try {
+    db.prepare(`
+      UPDATE patient_links
+      SET is_used = 1,
+          used_at = COALESCE(
+            (SELECT MAX(s.created_at) FROM submissions s WHERE s.patient_id = patient_links.patient_id),
+            (SELECT created_at FROM patient_links WHERE id = patient_links.id)
+          )
+      WHERE is_used = 0
+        AND patient_id IS NOT NULL
+        AND patient_id IN (SELECT DISTINCT patient_id FROM submissions WHERE patient_id IS NOT NULL)
+    `).run();
+  } catch (_e) {}
+
   // Seed / Update official clinic materials from materialCatalog
   if (defaultMaterials && defaultMaterials.length) {
     const checkMat = db.prepare('SELECT id FROM material_costs WHERE name = ?');
@@ -1356,7 +1371,7 @@ app.get('/admin', requireAuth, (req, res) => {
       SELECT
         (SELECT COUNT(*) FROM patients) AS total_patients,
         (SELECT COUNT(*) FROM submissions) AS total_submissions,
-        (SELECT COUNT(*) FROM patient_links WHERE is_used = 0 AND id NOT IN (SELECT link_id FROM submissions WHERE link_id IS NOT NULL)) AS pending_links,
+        (SELECT COUNT(*) FROM patient_links WHERE is_used = 0 AND id NOT IN (SELECT link_id FROM submissions WHERE link_id IS NOT NULL) AND (patient_id IS NULL OR patient_id NOT IN (SELECT DISTINCT patient_id FROM submissions WHERE patient_id IS NOT NULL))) AS pending_links,
         (SELECT COUNT(*) FROM appointments WHERE start_at >= ? AND status != 'cancelled') AS upcoming_appointments
       `
     )
@@ -1380,7 +1395,8 @@ app.get('/admin', requireAuth, (req, res) => {
         p.id AS resolved_patient_id,
         p.patient_code,
         COALESCE(p.full_name, json_extract(s.data_json, '$.nomeCompleto'), l.patient_name_hint) AS patient_name,
-        COALESCE(p.email, json_extract(s.data_json, '$.email'), l.patient_email_hint) AS patient_email
+        COALESCE(p.email, json_extract(s.data_json, '$.email'), l.patient_email_hint) AS patient_email,
+        (SELECT COUNT(*) FROM submissions s2 WHERE s2.patient_id = COALESCE(p.id, l.patient_id)) AS patient_submission_count
       FROM patient_links l
       LEFT JOIN submissions s ON s.link_id = l.id
       LEFT JOIN patients p ON p.id = COALESCE(s.patient_id, l.patient_id)
@@ -1389,9 +1405,9 @@ app.get('/admin', requireAuth, (req, res) => {
     )
     .all();
 
-  // Separa links pendentes dos já respondidos (links respondidos nunca aparecem como pendentes)
+  // Separa links pendentes dos já respondidos: se o paciente já possui questionário enviado, o link é considerado respondido
   const pendingRows = rows
-    .filter((row) => !row.is_used && !row.submission_id)
+    .filter((row) => !row.is_used && !row.submission_id && (row.patient_submission_count || 0) === 0)
     .map((row) => {
       const patientLink = `${BASE_URL}/paciente/${row.token}`;
       const patientName = row.patient_name || '-';
@@ -1426,20 +1442,27 @@ app.get('/admin', requireAuth, (req, res) => {
     })
     .join('');
 
-  // Links já respondidos: só mostra nome da paciente
-  const answeredLinks = rows.filter((row) => row.is_used || row.submission_id);
-  const answeredChips = answeredLinks
-    .map((row) => {
-      const patientName = row.patient_name || 'Paciente';
-      const code = row.patient_code ? toCodeNumber(row.patient_code) : '';
-      if (row.resolved_patient_id) {
-        return `<a class="chip done answered-chip" href="/admin/patients/${row.resolved_patient_id}">
+  // Links já respondidos: desduplica por paciente para visualização limpa
+  const answeredLinks = rows.filter((row) => row.is_used || row.submission_id || (row.patient_submission_count || 0) > 0);
+  const seenPatients = new Set();
+  const distinctAnsweredChips = [];
+  for (const row of answeredLinks) {
+    const pKey = row.resolved_patient_id || row.patient_name;
+    if (!pKey || seenPatients.has(pKey)) continue;
+    seenPatients.add(pKey);
+    const patientName = row.patient_name || 'Paciente';
+    const code = row.patient_code ? toCodeNumber(row.patient_code) : '';
+    if (row.resolved_patient_id) {
+      distinctAnsweredChips.push(`
+        <a class="chip done answered-chip" href="/admin/patients/${row.resolved_patient_id}">
           ${code ? `<span class="patient-code">${escapeHtml(code)}</span> ` : ''}${escapeHtml(patientName)} →
-        </a>`;
-      }
-      return `<span class="chip done answered-chip">${escapeHtml(patientName)}</span>`;
-    })
-    .join('');
+        </a>
+      `);
+    } else {
+      distinctAnsweredChips.push(`<span class="chip done answered-chip">${escapeHtml(patientName)}</span>`);
+    }
+  }
+  const answeredChips = distinctAnsweredChips.join('');
 
   const body = `
     <header class="panel header-panel">
@@ -1580,7 +1603,7 @@ app.post('/admin/links/:id/delete', requireAuth, (req, res) => {
     return;
   }
   const hasSub = db.prepare('SELECT id FROM submissions WHERE link_id = ? LIMIT 1').get(linkId);
-  if (hasSub || link.is_used) {
+  if (hasSub) {
     res.status(400).send('Este link já possui questionário respondido e não pode ser excluído.');
     return;
   }
@@ -1816,8 +1839,8 @@ app.post('/paciente/:token', (req, res) => {
       }
 
       db.prepare(
-        'UPDATE patient_links SET patient_id = ?, is_used = 1, used_at = ? WHERE id = ?'
-      ).run(patientId, nowIso(), link.id);
+        'UPDATE patient_links SET patient_id = ?, is_used = 1, used_at = ? WHERE id = ? OR (patient_id = ? AND is_used = 0)'
+      ).run(patientId, nowIso(), link.id, patientId);
     });
 
     tx();
