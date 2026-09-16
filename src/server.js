@@ -749,6 +749,8 @@ function formatDateBR(dateStr) {
   return String(dateStr);
 }
 
+const formatDate = formatDateBR;
+
 function getFifthBusinessDay(year, month1to12) {
   let count = 0;
   let day = 1;
