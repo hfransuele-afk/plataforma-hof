@@ -7788,7 +7788,11 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
                 </div>
               </td>
               <td><span class="badge" style="background:#f4efe7;color:var(--accent);font-weight:600">${escapeHtml(m.category || 'Geral')}</span></td>
-              <td><strong>${escapeHtml(m.name)}</strong></td>
+              <td>
+                <label for="chk_${m.id}" style="cursor:pointer;margin:0;font-weight:600;color:var(--text);display:block" title="Clique para selecionar este insumo">
+                  ${escapeHtml(m.name)}
+                </label>
+              </td>
               <td>${escapeHtml(m.unit_type)}</td>
               <td><strong>R$ ${escapeHtml(formatBRL(m.cost_per_unit))}</strong></td>
               <td>
@@ -8043,6 +8047,12 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
     <script>
       var selectedMaterialsMap = {};
 
+      function escapeHtmlClient(str) {
+        var div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+      }
+
       function quickUseItem(id, name, cost) {
         var chk = document.getElementById('chk_' + id);
         var qtyInput = document.getElementById('qty_' + id);
@@ -8067,8 +8077,8 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
         var chk = document.getElementById('chk_' + id);
         var qtyInput = document.getElementById('qty_' + id);
         if (chk && chk.checked) {
-          var name = chk.dataset.name;
-          var cost = parseFloat(chk.dataset.cost) || 0;
+          var name = chk.getAttribute('data-name') || chk.dataset.name || ('Item ' + id);
+          var cost = parseFloat(chk.getAttribute('data-cost') || chk.dataset.cost) || 0;
           var qty = parseFloat(qtyInput ? qtyInput.value : 1) || 1;
           selectedMaterialsMap[id] = { id: id, name: name, cost: cost, qty: qty };
           if (qtyInput) qtyInput.style.display = 'inline-block';
@@ -8110,64 +8120,72 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
       }
 
       function renderSelectedMaterials() {
-        var items = Object.values(selectedMaterialsMap);
-        var listContainer = document.getElementById('consumoSelectedList');
-        var totalCostElem = document.getElementById('labelTotalCustoUso');
-        var countElem = document.getElementById('consumoItemCount');
-        var hiddenJson = document.getElementById('consumoMaterialsJson');
-        var btnSave = document.getElementById('btnSalvarConsumo');
-        var descInput = document.getElementById('consumoDescription');
+        try {
+          var items = Object.values(selectedMaterialsMap);
+          var listContainer = document.getElementById('consumoSelectedList');
+          var totalCostElem = document.getElementById('labelTotalCustoUso');
+          var countElem = document.getElementById('consumoItemCount');
+          var hiddenJson = document.getElementById('consumoMaterialsJson');
+          var btnSave = document.getElementById('btnSalvarConsumo');
+          var descInput = document.getElementById('consumoDescription');
 
-        var floatBar = document.getElementById('catFloatingBar');
-        var floatCount = document.getElementById('catFloatCount');
-        var floatCost = document.getElementById('catFloatCost');
+          var floatBar = document.getElementById('catFloatingBar');
+          var floatCount = document.getElementById('catFloatCount');
+          var floatCost = document.getElementById('catFloatCost');
 
-        if (items.length === 0) {
-          listContainer.innerHTML = '<p class="muted" style="margin:0;font-size:0.82rem;text-align:center">Marque os insumos na tabela abaixo (ou clique no botão <strong>+ Lançar Uso</strong>) para adicioná-los aqui.</p>';
-          totalCostElem.textContent = 'R$ 0,00';
-          countElem.textContent = 'Nenhum item marcado ainda';
-          hiddenJson.value = '[]';
-          btnSave.disabled = true;
-          btnSave.style.opacity = '0.5';
-          if (floatBar) floatBar.style.display = 'none';
-          return;
-        }
+          if (items.length === 0) {
+            if (listContainer) listContainer.innerHTML = '<p class="muted" style="margin:0;font-size:0.82rem;text-align:center">Marque os insumos na tabela abaixo (ou clique no botão <strong>+ Lançar Uso</strong>) para adicioná-los aqui.</p>';
+            if (totalCostElem) totalCostElem.textContent = 'R$ 0,00';
+            if (countElem) countElem.textContent = 'Nenhum item marcado ainda';
+            if (hiddenJson) hiddenJson.value = '[]';
+            if (btnSave) {
+              btnSave.disabled = true;
+              btnSave.style.opacity = '0.5';
+            }
+            if (floatBar) floatBar.style.display = 'none';
+            return;
+          }
 
-        var totalCost = 0;
-        var totalQty = 0;
-        var namesArray = [];
-        var html = '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+          var totalCost = 0;
+          var totalQty = 0;
+          var namesArray = [];
+          var html = '<div style="display:flex;flex-wrap:wrap;gap:8px">';
 
-        items.forEach(function(item) {
-          var itemTotal = item.qty * item.cost;
-          item.total = itemTotal;
-          totalCost += itemTotal;
-          totalQty += item.qty;
-          namesArray.push(item.qty + 'x ' + item.name);
+          items.forEach(function(item) {
+            var itemTotal = item.qty * item.cost;
+            item.total = itemTotal;
+            totalCost += itemTotal;
+            totalQty += item.qty;
+            namesArray.push(item.qty + 'x ' + item.name);
 
-          html += '<div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:4px 10px;display:inline-flex;align-items:center;gap:8px;font-size:0.82rem">';
-          html += '<strong>' + item.qty + 'x ' + escapeHtml(item.name) + '</strong> (R$ ' + itemTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
-          html += '<button type="button" onclick="removeSelectedItem(' + item.id + ')" style="background:none;border:none;color:#ef4444;font-weight:bold;cursor:pointer;padding:0 2px" title="Remover">✕</button>';
+            html += '<div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:4px 10px;display:inline-flex;align-items:center;gap:8px;font-size:0.82rem">';
+            html += '<strong>' + item.qty + 'x ' + escapeHtmlClient(item.name) + '</strong> (R$ ' + itemTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
+            html += '<button type="button" onclick="removeSelectedItem(' + item.id + ')" style="background:none;border:none;color:#ef4444;font-weight:bold;cursor:pointer;padding:0 2px" title="Remover">✕</button>';
+            html += '</div>';
+          });
           html += '</div>';
-        });
-        html += '</div>';
 
-        listContainer.innerHTML = html;
-        var formattedCost = 'R$ ' + totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        totalCostElem.textContent = formattedCost;
-        countElem.textContent = items.length + ' item(ns) (' + totalQty + ' unidades)';
-        hiddenJson.value = JSON.stringify(items);
-        btnSave.disabled = false;
-        btnSave.style.opacity = '1';
+          if (listContainer) listContainer.innerHTML = html;
+          var formattedCost = 'R$ ' + totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          if (totalCostElem) totalCostElem.textContent = formattedCost;
+          if (countElem) countElem.textContent = items.length + ' item(ns) (' + totalQty + ' unidades)';
+          if (hiddenJson) hiddenJson.value = JSON.stringify(items);
+          if (btnSave) {
+            btnSave.disabled = false;
+            btnSave.style.opacity = '1';
+          }
 
-        if (descInput && (!descInput.value || descInput.value.indexOf('Consumo de Insumos:') === 0)) {
-          descInput.value = 'Consumo de Insumos: ' + namesArray.join(', ');
-        }
+          if (descInput && (!descInput.value || descInput.value.indexOf('Consumo de Insumos:') === 0)) {
+            descInput.value = 'Consumo de Insumos: ' + namesArray.join(', ');
+          }
 
-        if (floatBar) {
-          floatBar.style.display = 'flex';
-          if (floatCount) floatCount.textContent = items.length;
-          if (floatCost) floatCost.textContent = formattedCost;
+          if (floatBar) {
+            floatBar.style.display = 'flex';
+            if (floatCount) floatCount.textContent = items.length;
+            if (floatCost) floatCost.textContent = formattedCost;
+          }
+        } catch(err) {
+          console.error('Erro ao renderizar materiais selecionados:', err);
         }
       }
 
