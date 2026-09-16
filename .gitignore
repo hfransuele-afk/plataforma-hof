@@ -1,12 +1,13 @@
 node_modules
 .env
 .DS_Store
-storage/clinic.db
-storage/clinic.db-shm
-storage/clinic.db-wal
-storage/*.db-journal
+storage/clinic.db*
+storage/*.bak*
+storage/backups/
 storage/uploads/*
 !storage/uploads/.gitkeep
+logs/
 npm-debug.log*
 .claude/
+*.zip
 
