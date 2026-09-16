@@ -601,13 +601,14 @@ try {
 
 function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 'recalcProfit' }) {
   const categoryOrder = [
-    'Tecnologia',
+    'Cânulas e Insumos',
     'Toxina Botulínica',
     'Preenchedor',
     'Bioestimulador',
+    'Tecnologia',
     'Fios PDO',
-    'Cânulas e Insumos',
-    'Procedimento / Sessão'
+    'Procedimento / Sessão',
+    'Geral'
   ];
 
   const grouped = {};
@@ -626,13 +627,53 @@ function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 're
     return a.localeCompare(b);
   });
 
-  return sortedCats.map((cat) => {
+  // Atalhos rápidos para insumos de apoio frequentes (Cânulas, Anestésicos, Cartuchos)
+  const quickItems = materials.filter(m =>
+    m.is_active && (
+      (m.category && m.category.toLowerCase().includes('cânula')) ||
+      m.name.toLowerCase().includes('cânula') ||
+      m.name.toLowerCase().includes('anestésico') ||
+      m.name.toLowerCase().includes('cartucho')
+    )
+  );
+
+  const quickBarHtml = quickItems.length ? `
+    <div class="materials-quick-bar" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 12px;margin-bottom:10px">
+      <div style="font-size:0.75rem;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+        <span>⭐ Insumos de Apoio Frequentes (Cânulas & Anestésicos):</span>
+        <span style="font-weight:normal;color:var(--muted);font-size:0.72rem">Clique para somar +1 ao procedimento</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${quickItems.map(m => `
+          <button type="button" class="btn tiny" style="background:#ffffff;border:1px solid var(--line);font-size:0.75rem;padding:3px 8px;border-radius:6px;cursor:pointer;font-weight:500" onclick="${prefix}AdjustQty(${m.id}, 1); ${onchangeFn}()">
+            +1 ${escapeHtml(m.name)} <strong>(R$ ${escapeHtml(formatBRL(m.cost_per_unit))})</strong>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  ` : '';
+
+  const searchAndFilterHtml = `
+    <div style="margin-bottom:8px">
+      <input type="text" id="${prefix}_search_input" class="materials-search-input" placeholder="🔍 Filtrar insumo ou cânula (ex: cânula, anestésico, botox)..." oninput="${prefix}FilterMaterials(this.value)" style="width:100%;padding:6px 12px;border:1px solid var(--line);border-radius:8px;font-size:0.82rem;box-sizing:border-box">
+    </div>
+    <div class="materials-cat-pills" id="${prefix}_cat_pills" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">
+      <button type="button" class="btn tiny primary ${prefix}-pill" data-cat="ALL" onclick="${prefix}FilterCategory('ALL', this)">Todos (${materials.length})</button>
+      ${sortedCats.map(cat => `
+        <button type="button" class="btn tiny ghost ${prefix}-pill" data-cat="${escapeHtml(cat)}" onclick="${prefix}FilterCategory('${escapeHtml(cat)}', this)">
+          ${cat === 'Cânulas e Insumos' ? '🩺 ' : ''}${escapeHtml(cat)} (${grouped[cat].length})
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  const blocksHtml = sortedCats.map((cat) => {
     const items = grouped[cat];
     const itemsHtml = items.map((m) => {
       const step = m.quick_step || (m.unit_type === 'Disparo' ? 50 : 1);
       const isTech = cat === 'Tecnologia';
       return `
-        <div class="material-item-row" id="${prefix}_row_${m.id}">
+        <div class="material-item-row ${prefix}-mat-row" id="${prefix}_row_${m.id}" data-name="${escapeHtml(m.name)}" data-cat="${escapeHtml(cat)}">
           <label class="material-item-name" style="cursor:pointer;margin:0">
             <input type="checkbox" class="${prefix}-mat-checkbox" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" data-step="${step}" onchange="${prefix}OnCheckChange(${m.id}); ${onchangeFn}()">
             <div>
@@ -657,15 +698,17 @@ function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 're
     }).join('');
 
     return `
-      <div class="materials-category-block" style="margin-bottom:12px">
+      <div class="materials-category-block ${prefix}-cat-block" data-category="${escapeHtml(cat)}" style="margin-bottom:12px">
         <div class="materials-category-header">
-          <span>${escapeHtml(cat)}</span>
+          <span>${cat === 'Cânulas e Insumos' ? '🩺 ' : ''}${escapeHtml(cat)}</span>
           <span style="font-size:0.75rem;font-weight:normal;opacity:0.8">${items.length} itens</span>
         </div>
         ${itemsHtml}
       </div>
     `;
   }).join('');
+
+  return quickBarHtml + searchAndFilterHtml + blocksHtml;
 }
 
 function renderMaterialsPickerScript(prefix, onchangeFn) {
@@ -713,6 +756,42 @@ function renderMaterialsPickerScript(prefix, onchangeFn) {
         input.value = 0;
       }
       ${prefix}OnQtyInput(id);
+    }
+
+    function ${prefix}FilterMaterials(term) {
+      term = (term || '').toLowerCase().trim();
+      var rows = document.querySelectorAll('.${prefix}-mat-row');
+      var catBlocks = document.querySelectorAll('.${prefix}-cat-block');
+      rows.forEach(function(row) {
+        var name = (row.getAttribute('data-name') || '').toLowerCase();
+        var cat = (row.getAttribute('data-cat') || '').toLowerCase();
+        if (!term || name.indexOf(term) !== -1 || cat.indexOf(term) !== -1) {
+          row.style.display = 'grid';
+        } else {
+          row.style.display = 'none';
+        }
+      });
+      catBlocks.forEach(function(block) {
+        var visibleRows = block.querySelectorAll('.${prefix}-mat-row:not([style*="display: none"])');
+        block.style.display = visibleRows.length > 0 ? 'block' : 'none';
+      });
+    }
+
+    function ${prefix}FilterCategory(cat, btn) {
+      var pills = document.querySelectorAll('.${prefix}-pill');
+      pills.forEach(function(p) { p.classList.remove('primary'); p.classList.add('ghost'); });
+      if (btn) {
+        btn.classList.remove('ghost');
+        btn.classList.add('primary');
+      }
+      var catBlocks = document.querySelectorAll('.${prefix}-cat-block');
+      catBlocks.forEach(function(block) {
+        if (cat === 'ALL' || block.getAttribute('data-category') === cat) {
+          block.style.display = 'block';
+        } else {
+          block.style.display = 'none';
+        }
+      });
     }
   `;
 }
@@ -1049,6 +1128,28 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function escapeJs(value) {
+  const text = String(value ?? '');
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '');
+}
+
+function formatMaterialsSummaryHtml(materialsJson, cost) {
+  if (!materialsJson) return '';
+  try {
+    const list = typeof materialsJson === 'string' ? JSON.parse(materialsJson) : materialsJson;
+    if (Array.isArray(list) && list.length > 0) {
+      const summary = list.map(item => `${item.qty || 1}x ${item.name}`).join(', ');
+      return `<div style="font-size:0.72rem;color:var(--muted);margin-top:3px;max-width:230px;line-height:1.25" title="${escapeHtml(summary)}">📦 ${escapeHtml(summary)}</div>`;
+    }
+  } catch (_e) {}
+  return '';
 }
 
 function safeFieldValue(rawValue) {
@@ -2912,7 +3013,10 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
           <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(f.card_fee_amount))} (${f.card_fee_pct}%)</td>
           <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(f.tax_amount))} (6%)</td>
           <td style="color:#9a3412">- R$ ${escapeHtml(formatBRL(f.clinic_split_amount))} (30%)</td>
-          <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(f.materials_cost))}</td>
+          <td style="color:var(--danger)">
+            - R$ ${escapeHtml(formatBRL(f.materials_cost))}
+            ${formatMaterialsSummaryHtml(f.materials_json, f.materials_cost)}
+          </td>
           <td style="color:#15803d;font-weight:700">R$ ${escapeHtml(formatBRL(f.net_profit))}</td>
           <td>
             <form method="post" action="/admin/patients/${patient.id}/financial/${f.id}/delete" onsubmit="return confirm('Excluir este registro financeiro?')" style="margin:0">
@@ -6823,7 +6927,10 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
               <td style="color:var(--muted)">- R$ ${escapeHtml(formatBRL(e.card_fee_amount))} <span style="font-size:0.75rem">(${e.card_fee_pct}%)</span></td>
               <td style="color:#b45309">- R$ ${escapeHtml(formatBRL(e.tax_amount))} <span style="font-size:0.75rem">(${e.tax_pct || 6}%)</span></td>
               <td style="color:#9a3412;font-weight:600">- R$ ${escapeHtml(formatBRL(e.clinic_split_amount))} <span style="font-size:0.75rem">(${e.clinic_split_pct || 30}%)</span></td>
-              <td style="color:var(--danger)">- R$ ${escapeHtml(formatBRL(e.materials_cost))}</td>
+              <td style="color:var(--danger)">
+                - R$ ${escapeHtml(formatBRL(e.materials_cost))}
+                ${formatMaterialsSummaryHtml(e.materials_json, e.materials_cost)}
+              </td>
               <td style="color:#15803d;font-weight:700;font-size:0.95rem">R$ ${escapeHtml(formatBRL(e.net_profit))}</td>
               <td>
                 <form method="post" action="/admin/financial/${e.id}/delete" onsubmit="return confirm('Excluir este lançamento financeiro?')" style="margin:0">
@@ -7660,12 +7767,26 @@ app.post('/admin/financeiro/settings', requireAuth, (req, res) => {
 // ─── GESTÃO DO CATÁLOGO DE INSUMOS & MATERIAIS ─────────────────────────────
 app.get('/admin/materiais', requireAuth, (req, res) => {
   const materials = db.prepare('SELECT * FROM material_costs ORDER BY category ASC, name ASC').all();
+  const patients = db.prepare('SELECT id, full_name, phone FROM patients ORDER BY full_name ASC').all();
+  const recentFinancials = db.prepare(`
+    SELECT pf.id, pf.patient_id, pf.description, pf.gross_value, pf.procedure_date, pf.materials_cost, p.full_name as patient_name
+    FROM procedure_financials pf
+    LEFT JOIN patients p ON p.id = pf.patient_id
+    ORDER BY pf.id DESC
+    LIMIT 25
+  `).all();
 
   const rows = materials.length
     ? materials
         .map(
           (m) => `
-            <tr>
+            <tr class="mat-table-row" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cat="${escapeHtml(m.category || 'Geral')}">
+              <td style="text-align:center;width:75px">
+                <div style="display:flex;align-items:center;justify-content:center;gap:4px">
+                  <input type="checkbox" class="cat-mat-check" id="chk_${m.id}" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-cost="${m.cost_per_unit}" onchange="onCatMatChange(${m.id})" title="Marcar este insumo para lançamento">
+                  <input type="number" min="1" step="1" value="1" class="cat-mat-qty" id="qty_${m.id}" data-id="${m.id}" style="width:42px;padding:2px 4px;border-radius:6px;border:1px solid var(--line);font-size:0.8rem;text-align:center;display:none" oninput="onCatMatQtyChange(${m.id})" title="Quantidade">
+                </div>
+              </td>
               <td><span class="badge" style="background:#f4efe7;color:var(--accent);font-weight:600">${escapeHtml(m.category || 'Geral')}</span></td>
               <td><strong>${escapeHtml(m.name)}</strong></td>
               <td>${escapeHtml(m.unit_type)}</td>
@@ -7673,11 +7794,12 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
               <td>
                 ${m.is_active ? '<span class="badge signed">Ativo</span>' : '<span class="badge" style="background:#eee;color:#777">Inativo</span>'}
               </td>
-              <td style="display:flex;gap:6px">
+              <td style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <button type="button" class="btn tiny" onclick="quickUseItem(${m.id}, '${escapeJs(m.name)}', ${m.cost_per_unit})" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-weight:600;white-space:nowrap" title="Selecionar e lançar uso deste insumo no financeiro">+ Lançar Uso</button>
                 <form method="post" action="/admin/materiais/${m.id}/edit" style="display:inline-flex;gap:4px">
                   <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
                   <input type="number" step="0.01" name="cost_per_unit" value="${m.cost_per_unit}" style="width:75px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);font-size:0.82rem">
-                  <button class="btn tiny" type="submit">Salvar Preço</button>
+                  <button class="btn tiny" type="submit">Salvar</button>
                 </form>
                 <form method="post" action="/admin/materiais/${m.id}/toggle" style="display:inline">
                   <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
@@ -7692,7 +7814,7 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
           `
         )
         .join('')
-    : '<tr><td colspan="6" class="muted">Nenhum insumo cadastrado ainda.</td></tr>';
+    : '<tr><td colspan="7" class="muted">Nenhum insumo cadastrado ainda.</td></tr>';
 
   const body = `
     <header class="panel header-panel">
@@ -7707,17 +7829,154 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
       </div>
     </header>
 
-    ${renderAlert(req.query.saved ? 'Insumo cadastrado com sucesso!' : null, 'success')}
+    ${renderAlert(req.query.saved ? 'Insumo cadastrado com sucesso no catálogo!' : null, 'success')}
     ${renderAlert(req.query.updated ? 'Insumo atualizado com sucesso!' : null, 'success')}
     ${renderAlert(req.query.deleted ? 'Insumo excluído.' : null, 'info')}
+    ${renderAlert(req.query.consumo_saved ? `✅ Insumos contabilizados com sucesso no financeiro! Total de R$ ${escapeHtml(req.query.cost || '0,00')} (${escapeHtml(req.query.items || '')}) abatidos nos custos.` : null, 'success')}
+    ${renderAlert(req.query.consumo_linked ? `✅ Insumos vinculados com sucesso ao procedimento existente! R$ ${escapeHtml(req.query.cost || '0,00')} (${escapeHtml(req.query.items || '')}) adicionados aos custos e lucro líquido recalculado.` : null, 'success')}
+    ${renderAlert(req.query.error === 'no_items' ? '⚠️ Selecione ao menos um insumo na tabela para realizar o lançamento.' : null, 'warning')}
+
+    <!-- Painel de Lançamento de Insumos Usados no Financeiro -->
+    <section class="panel" id="painelLancamentoUso" style="background:#fcfaf7;border:2px solid var(--gold-border);margin-bottom:24px;border-radius:14px;box-shadow:0 4px 15px rgba(0,0,0,0.03);transition:box-shadow 0.3s">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+        <div>
+          <h2 style="margin:0 0 4px;display:flex;align-items:center;gap:8px;font-size:1.25rem">
+            <span>🩺 Lançar Insumos Usados no Financeiro</span>
+          </h2>
+          <p class="muted" style="margin:0;font-size:0.86rem">
+            Marque na tabela abaixo as cânulas, anestésicos e demais materiais utilizados para abater automaticamente dos custos financeiros da paciente.
+          </p>
+        </div>
+        <div id="badgeTotalUso" style="background:#ecfdf5;border:1px solid #6ee7b7;padding:8px 16px;border-radius:10px;text-align:right">
+          <div style="font-size:0.75rem;color:#047857;font-weight:600;text-transform:uppercase">Custo Total dos Insumos</div>
+          <strong id="labelTotalCustoUso" style="font-size:1.35rem;color:#065f46">R$ 0,00</strong>
+        </div>
+      </div>
+
+      <form method="post" action="/admin/materiais/consumo" id="formConsumoInsumos">
+        <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+        <input type="hidden" name="materials_json" id="consumoMaterialsJson" value="[]">
+
+        <!-- Paciente e Data -->
+        <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px;margin-bottom:12px">
+          <label class="field">
+            <span>Paciente *</span>
+            <select name="patient_id" id="consumoPatientId" required onchange="onConsumoPatientChange(this.value)">
+              <option value="">Selecione a paciente...</option>
+              <option value="0">Consumo Geral da Clínica (Sem paciente específica)</option>
+              ${patients.map(p => `<option value="${p.id}">${escapeHtml(p.full_name)} ${p.phone ? `(${escapeHtml(p.phone)})` : ''}</option>`).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span>Data do Atendimento / Uso *</span>
+            <input type="date" name="procedure_date" value="${nowIso().slice(0, 10)}" required>
+          </label>
+        </div>
+
+        <!-- Tipo de Lançamento: Novo ou Vincular a Procedimento Existente -->
+        <div style="background:#ffffff;border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin-bottom:12px">
+          <span style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:6px">Opção de Lançamento:</span>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:0.88rem">
+              <input type="radio" name="launch_mode" value="new" checked onchange="toggleLaunchMode('new')">
+              <strong>Novo Lançamento no Financeiro</strong>
+            </label>
+            <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:0.88rem">
+              <input type="radio" name="launch_mode" value="link" onchange="toggleLaunchMode('link')">
+              <span>Vincular a procedimento já realizado da paciente</span>
+            </label>
+          </div>
+
+          <div id="wrapLinkExisting" style="display:none;margin-top:12px">
+            <label class="field" style="margin:0">
+              <span style="color:var(--accent);font-weight:600">Selecione o procedimento já realizado para somar estes insumos:</span>
+              <select name="link_financial_id" id="linkFinancialId" onchange="onSelectExistingProcedure(this.value)">
+                <option value="">Selecione um procedimento cadastrado...</option>
+                ${recentFinancials.map(f => `
+                  <option value="${f.id}" data-patient="${f.patient_id}" data-desc="${escapeHtml(f.description)}" data-gross="${f.gross_value}" data-mat="${f.materials_cost}">
+                    #${f.id} — ${escapeHtml(f.patient_name || 'Geral')} — ${escapeHtml(f.description)} (${formatDate(f.procedure_date || '')}) — Bruto R$ ${formatBRL(f.gross_value)} (Insumos atuais: R$ ${formatBRL(f.materials_cost)})
+                  </option>
+                `).join('')}
+              </select>
+            </label>
+            <p class="muted" style="font-size:0.75rem;margin:4px 0 0">
+              ℹ️ O custo destes insumos será somado aos insumos já cadastrados no procedimento selecionado e o lucro líquido será recalculado automaticamente na regra oficial dos 6 passos.
+            </p>
+          </div>
+        </div>
+
+        <!-- Detalhes do Novo Lançamento (Descrição e Valor Cobrado) -->
+        <div id="wrapNewLaunchDetails">
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px;margin-bottom:12px">
+            <label class="field">
+              <span>Descrição do Lançamento</span>
+              <input type="text" name="description" id="consumoDescription" placeholder="Ex: Consumo de Cânulas e Anestésico - Harmonização">
+            </label>
+            <label class="field">
+              <span>Valor Cobrado da Paciente (R$)</span>
+              <input type="number" step="0.01" min="0" name="gross_value" id="consumoGrossValue" value="0.00" placeholder="0,00" title="Deixe 0,00 se for apenas baixa de custo de insumos">
+              <small class="muted" style="font-size:0.72rem">Deixe 0,00 se for apenas baixa de custo de insumos</small>
+            </label>
+            <label class="field">
+              <span>Forma de Pagamento</span>
+              <select name="payment_method">
+                <option value="pix">Pix (Sem taxa)</option>
+                <option value="dinheiro">Dinheiro (Sem taxa)</option>
+                <option value="debito">Cartão de Débito</option>
+                <option value="credito_1x">Cartão de Crédito 1x</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Lista de Insumos Selecionados -->
+        <div style="margin-bottom:14px">
+          <div style="font-size:0.85rem;font-weight:600;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">
+            <span>Itens Selecionados no Catálogo:</span>
+            <span id="consumoItemCount" class="muted" style="font-size:0.8rem">Nenhum item marcado ainda</span>
+          </div>
+          <div id="consumoSelectedList" style="background:#ffffff;border:1px dashed var(--line);border-radius:8px;padding:12px;min-height:54px">
+            <p class="muted" style="margin:0;font-size:0.82rem;text-align:center">
+              Marque os insumos na tabela abaixo (ou clique no botão <strong>+ Lançar Uso</strong>) para adicioná-los aqui.
+            </p>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="btn primary" type="submit" id="btnSalvarConsumo" disabled style="opacity:0.5;font-weight:600">
+            💾 Gravar e Contabilizar no Financeiro
+          </button>
+          <button type="button" class="btn ghost" onclick="clearCatSelection()">Limpar Seleção</button>
+        </div>
+      </form>
+    </section>
 
     <!-- Tabela de Materiais -->
     <section class="panel">
-      <h2>Materiais e Insumos Cadastrados (Oficiais)</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <h2 style="margin:0">Materiais e Insumos Cadastrados (Oficiais)</h2>
+        <span class="muted" style="font-size:0.82rem">Clique em <strong>+ Lançar Uso</strong> ou marque <strong>☑️</strong> para lançar</span>
+      </div>
+
+      <!-- Filtros Rápidos da Tabela -->
+      <div style="margin:14px 0 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="catTableSearch" placeholder="🔍 Filtrar nesta lista (ex: cânula, anestésico, cartucho, botox)..." oninput="filterCatTable(this.value)" style="flex:1;min-width:260px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;font-size:0.85rem">
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button type="button" class="btn tiny primary cat-tbl-pill" onclick="filterCatTableCategory('ALL', this)">Todos (${materials.length})</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Cânulas e Insumos', this)">🩺 Cânulas & Insumos</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Preenchedor', this)">💉 Preenchedor</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Bioestimulador', this)">✨ Bioestimulador</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Toxina Botulínica', this)">Botox</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Tecnologia', this)">Tecnologia</button>
+          <button type="button" class="btn tiny ghost cat-tbl-pill" onclick="filterCatTableCategory('Fios PDO', this)">Fios PDO</button>
+        </div>
+      </div>
+
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
+              <th style="text-align:center">☑️ Usar</th>
               <th>Categoria</th>
               <th>Nome do Material / Produto</th>
               <th>Apresentação / Unidade</th>
@@ -7733,6 +7992,12 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
       </div>
     </section>
 
+    <!-- Barra Flutuante de Seleção -->
+    <div id="catFloatingBar" class="cat-floating-bar">
+      <span>✨ <strong id="catFloatCount">0</strong> insumo(s) selecionado(s) — Total: <strong id="catFloatCost" style="color:#34d399">R$ 0,00</strong></span>
+      <button type="button" class="btn tiny primary" onclick="scrollToLancador()" style="margin:0;font-weight:600">Preencher Lançamento ↗</button>
+    </div>
+
     <!-- Formulário para Novo Material -->
     <section class="panel" style="max-width:620px">
       <h2>+ Adicionar Novo Insumo ao Catálogo</h2>
@@ -7746,12 +8011,12 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
           <label class="field">
             <span>Categoria *</span>
             <select name="category" required>
-              <option value="Tecnologia">Tecnologia</option>
+              <option value="Cânulas e Insumos">Cânulas e Insumos</option>
               <option value="Toxina Botulínica">Toxina Botulínica</option>
               <option value="Preenchedor">Preenchedor</option>
               <option value="Bioestimulador">Bioestimulador</option>
+              <option value="Tecnologia">Tecnologia</option>
               <option value="Fios PDO">Fios PDO</option>
-              <option value="Cânulas e Insumos">Cânulas e Insumos</option>
               <option value="Procedimento / Sessão">Procedimento / Sessão</option>
               <option value="Geral" selected>Geral</option>
             </select>
@@ -7774,9 +8039,318 @@ app.get('/admin/materiais', requireAuth, (req, res) => {
         <button class="btn primary" type="submit">Cadastrar Insumo</button>
       </form>
     </section>
+
+    <script>
+      var selectedMaterialsMap = {};
+
+      function quickUseItem(id, name, cost) {
+        var chk = document.getElementById('chk_' + id);
+        var qtyInput = document.getElementById('qty_' + id);
+        if (!selectedMaterialsMap[id]) {
+          selectedMaterialsMap[id] = { id: id, name: name, cost: cost, qty: 1 };
+          if (chk) chk.checked = true;
+          if (qtyInput) { qtyInput.style.display = 'inline-block'; qtyInput.value = 1; }
+        } else {
+          selectedMaterialsMap[id].qty += 1;
+          if (qtyInput) qtyInput.value = selectedMaterialsMap[id].qty;
+        }
+        renderSelectedMaterials();
+        var panel = document.getElementById('painelLancamentoUso');
+        if (panel) {
+          panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          panel.style.boxShadow = '0 0 0 4px rgba(180, 83, 9, 0.25)';
+          setTimeout(function() { panel.style.boxShadow = ''; }, 1500);
+        }
+      }
+
+      function onCatMatChange(id) {
+        var chk = document.getElementById('chk_' + id);
+        var qtyInput = document.getElementById('qty_' + id);
+        if (chk && chk.checked) {
+          var name = chk.dataset.name;
+          var cost = parseFloat(chk.dataset.cost) || 0;
+          var qty = parseFloat(qtyInput ? qtyInput.value : 1) || 1;
+          selectedMaterialsMap[id] = { id: id, name: name, cost: cost, qty: qty };
+          if (qtyInput) qtyInput.style.display = 'inline-block';
+        } else {
+          delete selectedMaterialsMap[id];
+          if (qtyInput) qtyInput.style.display = 'none';
+        }
+        renderSelectedMaterials();
+      }
+
+      function onCatMatQtyChange(id) {
+        var qtyInput = document.getElementById('qty_' + id);
+        if (!qtyInput) return;
+        var qty = Math.max(1, parseFloat(qtyInput.value) || 1);
+        if (selectedMaterialsMap[id]) {
+          selectedMaterialsMap[id].qty = qty;
+          renderSelectedMaterials();
+        }
+      }
+
+      function removeSelectedItem(id) {
+        var chk = document.getElementById('chk_' + id);
+        var qtyInput = document.getElementById('qty_' + id);
+        if (chk) chk.checked = false;
+        if (qtyInput) { qtyInput.style.display = 'none'; qtyInput.value = 1; }
+        delete selectedMaterialsMap[id];
+        renderSelectedMaterials();
+      }
+
+      function clearCatSelection() {
+        for (var id in selectedMaterialsMap) {
+          var chk = document.getElementById('chk_' + id);
+          var qtyInput = document.getElementById('qty_' + id);
+          if (chk) chk.checked = false;
+          if (qtyInput) { qtyInput.style.display = 'none'; qtyInput.value = 1; }
+        }
+        selectedMaterialsMap = {};
+        renderSelectedMaterials();
+      }
+
+      function renderSelectedMaterials() {
+        var items = Object.values(selectedMaterialsMap);
+        var listContainer = document.getElementById('consumoSelectedList');
+        var totalCostElem = document.getElementById('labelTotalCustoUso');
+        var countElem = document.getElementById('consumoItemCount');
+        var hiddenJson = document.getElementById('consumoMaterialsJson');
+        var btnSave = document.getElementById('btnSalvarConsumo');
+        var descInput = document.getElementById('consumoDescription');
+
+        var floatBar = document.getElementById('catFloatingBar');
+        var floatCount = document.getElementById('catFloatCount');
+        var floatCost = document.getElementById('catFloatCost');
+
+        if (items.length === 0) {
+          listContainer.innerHTML = '<p class="muted" style="margin:0;font-size:0.82rem;text-align:center">Marque os insumos na tabela abaixo (ou clique no botão <strong>+ Lançar Uso</strong>) para adicioná-los aqui.</p>';
+          totalCostElem.textContent = 'R$ 0,00';
+          countElem.textContent = 'Nenhum item marcado ainda';
+          hiddenJson.value = '[]';
+          btnSave.disabled = true;
+          btnSave.style.opacity = '0.5';
+          if (floatBar) floatBar.style.display = 'none';
+          return;
+        }
+
+        var totalCost = 0;
+        var totalQty = 0;
+        var namesArray = [];
+        var html = '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+
+        items.forEach(function(item) {
+          var itemTotal = item.qty * item.cost;
+          item.total = itemTotal;
+          totalCost += itemTotal;
+          totalQty += item.qty;
+          namesArray.push(item.qty + 'x ' + item.name);
+
+          html += '<div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:4px 10px;display:inline-flex;align-items:center;gap:8px;font-size:0.82rem">';
+          html += '<strong>' + item.qty + 'x ' + escapeHtml(item.name) + '</strong> (R$ ' + itemTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
+          html += '<button type="button" onclick="removeSelectedItem(' + item.id + ')" style="background:none;border:none;color:#ef4444;font-weight:bold;cursor:pointer;padding:0 2px" title="Remover">✕</button>';
+          html += '</div>';
+        });
+        html += '</div>';
+
+        listContainer.innerHTML = html;
+        var formattedCost = 'R$ ' + totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        totalCostElem.textContent = formattedCost;
+        countElem.textContent = items.length + ' item(ns) (' + totalQty + ' unidades)';
+        hiddenJson.value = JSON.stringify(items);
+        btnSave.disabled = false;
+        btnSave.style.opacity = '1';
+
+        if (descInput && (!descInput.value || descInput.value.indexOf('Consumo de Insumos:') === 0)) {
+          descInput.value = 'Consumo de Insumos: ' + namesArray.join(', ');
+        }
+
+        if (floatBar) {
+          floatBar.style.display = 'flex';
+          if (floatCount) floatCount.textContent = items.length;
+          if (floatCost) floatCost.textContent = formattedCost;
+        }
+      }
+
+      function toggleLaunchMode(mode) {
+        var wrapLink = document.getElementById('wrapLinkExisting');
+        var wrapNew = document.getElementById('wrapNewLaunchDetails');
+        if (mode === 'link') {
+          if (wrapLink) wrapLink.style.display = 'block';
+          if (wrapNew) wrapNew.style.display = 'none';
+        } else {
+          if (wrapLink) wrapLink.style.display = 'none';
+          if (wrapNew) wrapNew.style.display = 'block';
+        }
+      }
+
+      function onConsumoPatientChange(patientId) {
+        var selectProc = document.getElementById('linkFinancialId');
+        if (!selectProc) return;
+        var options = selectProc.querySelectorAll('option');
+        var foundAny = false;
+        options.forEach(function(opt) {
+          if (!opt.value) return;
+          var optPatient = opt.dataset.patient;
+          if (!patientId || optPatient === patientId || patientId === '0') {
+            opt.style.display = 'block';
+            foundAny = true;
+          } else {
+            opt.style.display = 'none';
+          }
+        });
+        if (!foundAny && patientId) {
+          selectProc.value = '';
+        }
+      }
+
+      function onSelectExistingProcedure(procId) {
+        var select = document.getElementById('linkFinancialId');
+        if (!select) return;
+        var opt = select.selectedOptions[0];
+        if (opt && opt.dataset.desc) {
+          var descInput = document.getElementById('consumoDescription');
+          if (descInput) descInput.value = 'Insumos adicionais: ' + opt.dataset.desc;
+        }
+      }
+
+      function scrollToLancador() {
+        var panel = document.getElementById('painelLancamentoUso');
+        if (panel) {
+          panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+
+      function filterCatTable(term) {
+        term = (term || '').toLowerCase().trim();
+        var rows = document.querySelectorAll('.mat-table-row');
+        rows.forEach(function(row) {
+          var name = (row.dataset.name || '').toLowerCase();
+          var cat = (row.dataset.cat || '').toLowerCase();
+          if (!term || name.indexOf(term) !== -1 || cat.indexOf(term) !== -1) {
+            row.style.display = '';
+          } else {
+            row.style.display = 'none';
+          }
+        });
+      }
+
+      function filterCatTableCategory(cat, btn) {
+        var pills = document.querySelectorAll('.cat-tbl-pill');
+        pills.forEach(function(p) { p.classList.remove('primary'); p.classList.add('ghost'); });
+        if (btn) {
+          btn.classList.remove('ghost');
+          btn.classList.add('primary');
+        }
+        var rows = document.querySelectorAll('.mat-table-row');
+        rows.forEach(function(row) {
+          if (cat === 'ALL' || row.dataset.cat === cat) {
+            row.style.display = '';
+          } else {
+            row.style.display = 'none';
+          }
+        });
+      }
+    </script>
   `;
 
   res.send(layout({ title: 'Catálogo de Insumos', body, userEmail: req.session.adminEmail, activeNav: 'materiais' }));
+});
+
+app.post('/admin/materiais/consumo', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
+  const patientId = Number(req.body.patient_id || 0) || null;
+  const procedureDate = String(req.body.procedure_date || '').trim().slice(0, 10) || nowIso().slice(0, 10);
+  const launchMode = String(req.body.launch_mode || 'new').trim();
+  const linkFinancialId = Number(req.body.link_financial_id || 0);
+
+  const materialsJson = String(req.body.materials_json || '[]');
+  let selectedItems = [];
+  try {
+    selectedItems = JSON.parse(materialsJson);
+    if (!Array.isArray(selectedItems)) selectedItems = [];
+  } catch (_e) {}
+
+  if (!selectedItems.length) {
+    res.redirect('/admin/materiais?error=no_items');
+    return;
+  }
+
+  const addedCost = selectedItems.reduce((acc, item) => acc + (parseFloat(item.total) || 0), 0);
+  const itemNames = selectedItems.map(i => `${i.qty}x ${i.name}`).join(', ');
+
+  const clinicSettings = db.prepare('SELECT * FROM clinic_settings WHERE id = 1').get() || {
+    default_tax_pct: 6.0,
+    default_card_fee_pct: 0.0,
+    default_clinic_split_pct: 30.0
+  };
+
+  if (launchMode === 'link' && linkFinancialId) {
+    // Vincular e somar insumos a procedimento já realizado
+    const existing = db.prepare('SELECT * FROM procedure_financials WHERE id = ?').get(linkFinancialId);
+    if (existing) {
+      let existingMaterials = [];
+      try {
+        existingMaterials = JSON.parse(existing.materials_json || '[]');
+        if (!Array.isArray(existingMaterials)) existingMaterials = [];
+      } catch (_e) {}
+
+      const mergedMaterials = existingMaterials.concat(selectedItems);
+      const newTotalMaterials = (existing.materials_cost || 0) + addedCost;
+
+      const calc = calculateProcedureProfit({
+        grossValue: existing.gross_value,
+        cardFeePct: existing.card_fee_pct,
+        taxPct: existing.tax_pct,
+        clinicSplitPct: existing.clinic_split_pct,
+        materialsCost: newTotalMaterials
+      });
+
+      db.prepare(`
+        UPDATE procedure_financials SET
+          materials_cost = ?,
+          materials_json = ?,
+          net_profit = ?
+        WHERE id = ?
+      `).run(calc.materialsCost, JSON.stringify(mergedMaterials), calc.netProfit, existing.id);
+
+      res.redirect(`/admin/materiais?consumo_linked=1&items=${encodeURIComponent(itemNames)}&cost=${encodeURIComponent(formatBRL(addedCost))}`);
+      return;
+    }
+  }
+
+  // Novo Lançamento no Financeiro
+  const grossValue = parseFloat(req.body.gross_value) || 0;
+  const paymentMethod = String(req.body.payment_method || 'pix').trim();
+  const installments = 1;
+  const description = String(req.body.description || '').trim() || `Consumo de Insumos: ${itemNames}`;
+
+  const calc = calculateProcedureProfit({
+    grossValue,
+    cardFeePct: paymentMethod === 'pix' || paymentMethod === 'dinheiro' ? 0 : (clinicSettings.default_card_fee_pct || 0),
+    taxPct: grossValue > 0 ? (clinicSettings.default_tax_pct || 6.0) : 0,
+    clinicSplitPct: grossValue > 0 ? (clinicSettings.default_clinic_split_pct || 30.0) : 0,
+    materialsCost: addedCost
+  });
+
+  db.prepare(`
+    INSERT INTO procedure_financials (
+      patient_id, description, payment_method, installments,
+      gross_value, materials_cost, materials_json,
+      card_fee_pct, card_fee_amount, value_after_card,
+      tax_pct, tax_amount, value_after_tax,
+      clinic_split_pct, clinic_split_amount, professional_subtotal,
+      net_profit, procedure_date, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    patientId, description, paymentMethod, installments,
+    calc.grossValue, calc.materialsCost, JSON.stringify(selectedItems),
+    calc.cardFeePct, calc.cardFeeAmount, calc.valueAfterCard,
+    calc.taxPct, calc.taxAmount, calc.valueAfterTax,
+    calc.clinicSplitPct, calc.clinicSplitAmount, calc.professionalSubtotal,
+    calc.netProfit, procedureDate, nowIso()
+  );
+
+  res.redirect(`/admin/materiais?consumo_saved=1&items=${encodeURIComponent(itemNames)}&cost=${encodeURIComponent(formatBRL(addedCost))}`);
 });
 
 app.post('/admin/materiais', requireAuth, (req, res) => {
