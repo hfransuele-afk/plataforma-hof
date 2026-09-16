@@ -525,19 +525,19 @@ function calculateProcedureProfit({
   const clinicP = Math.max(0, parseFloat(clinicSplitPct) || 0);
   const matCost = Math.max(0, parseFloat(materialsCost) || 0);
 
-  // 1. Taxa do cartão sobre o valor total pago
+  // 1. Taxa do cartão sobre o valor total cobrado
   const cardFeeAmount = gross * (cardPct / 100);
   const valueAfterCard = gross - cardFeeAmount;
 
-  // 2. Imposto de 6% sobre o valor após taxa do cartão
-  const taxAmount = valueAfterCard * (taxP / 100);
+  // 2. Imposto (6%) cobrado diretamente sobre o valor bruto faturado (mesmo sendo pix ou cartão)
+  const taxAmount = gross * (taxP / 100);
   const valueAfterTax = valueAfterCard - taxAmount;
 
-  // 3. Repasse da clínica (30%) sobre o valor após imposto
-  const clinicSplitAmount = valueAfterTax * (clinicP / 100);
+  // 3. Repasse da clínica (30%) sobre o valor líquido operacional (pós-cartão e pós-imposto)
+  const clinicSplitAmount = Math.max(0, valueAfterTax) * (clinicP / 100);
   const professionalSubtotal = valueAfterTax - clinicSplitAmount;
 
-  // 4. Subtrair custo dos insumos e tecnologias utilizadas
+  // 4. Subtrair custo dos insumos e tecnologias utilizadas (absorvidos pela profissional)
   const netProfit = professionalSubtotal - matCost;
 
   return {
@@ -555,6 +555,34 @@ function calculateProcedureProfit({
     netProfit
   };
 }
+
+// Recalcular registros existentes para garantir imposto de 6% sobre o valor bruto
+try {
+  const allFin = db.prepare('SELECT * FROM procedure_financials').all();
+  if (allFin.length > 0) {
+    const updStmt = db.prepare(`
+      UPDATE procedure_financials SET
+        tax_amount = ?,
+        value_after_tax = ?,
+        clinic_split_amount = ?,
+        professional_subtotal = ?,
+        net_profit = ?
+      WHERE id = ?
+    `);
+    db.transaction(() => {
+      for (const f of allFin) {
+        const c = calculateProcedureProfit({
+          grossValue: f.gross_value,
+          cardFeePct: f.card_fee_pct,
+          taxPct: f.tax_pct || 6.0,
+          clinicSplitPct: f.clinic_split_pct || 30.0,
+          materialsCost: f.materials_cost || 0
+        });
+        updStmt.run(c.taxAmount, c.valueAfterTax, c.clinicSplitAmount, c.professionalSubtotal, c.netProfit, f.id);
+      }
+    })();
+  }
+} catch (_err) {}
 
 function renderMaterialsPickerHtml({ materials, prefix = 'mat', onchangeFn = 'recalcProfit' }) {
   const categoryOrder = [
@@ -3077,7 +3105,7 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
             <div class="step-badge" style="background:#3b82f6">3</div>
             <div class="step-info">
               <div class="step-info-header">
-                <span>(-) Imposto (<span id="liveTaxPct">6.0</span>% pós-cartão)</span>
+                <span>(-) Imposto (<span id="liveTaxPct">6.0</span>% sobre valor bruto)</span>
                 <strong style="color:var(--danger)" id="liveTax">- R$ 0,00</strong>
               </div>
               <div class="step-info-sub">Subtotal após imposto: <strong id="liveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
@@ -3571,8 +3599,8 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
         var cardFeeAmount = gross * (cardPct / 100);
         var valueAfterCard = Math.max(0, gross - cardFeeAmount);
 
-        // 2. Imposto de 6% sobre o valor após taxa do cartão
-        var taxAmount = valueAfterCard * (taxPct / 100);
+        // 2. Imposto (6%) cobrado diretamente sobre o valor bruto faturado
+        var taxAmount = gross * (taxPct / 100);
         var valueAfterTax = Math.max(0, valueAfterCard - taxAmount);
 
         // 3. Repasse da clínica de 30% sobre o valor após imposto
@@ -6203,7 +6231,7 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
             <div class="step-badge" style="background:#3b82f6">3</div>
             <div class="step-info">
               <div class="step-info-header">
-                <span>(-) Imposto (<span id="simLiveTaxPct">6.0</span>% pós-cartão)</span>
+                <span>(-) Imposto (<span id="simLiveTaxPct">6.0</span>% sobre valor bruto)</span>
                 <strong style="color:var(--danger)" id="simLiveTax">- R$ 0,00</strong>
               </div>
               <div class="step-info-sub">Subtotal após imposto: <strong id="simLiveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
@@ -6383,7 +6411,7 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
 
           var cardFeeAmount = gross * (rate.fee_pct / 100);
           var valAfterCard = Math.max(0, gross - cardFeeAmount);
-          var taxAmount = valAfterCard * (taxPct / 100);
+          var taxAmount = gross * (taxPct / 100);
           var valAfterTax = Math.max(0, valAfterCard - taxAmount);
           var clinicAmount = valAfterTax * (clinicPct / 100);
           var profSubtotal = Math.max(0, valAfterTax - clinicAmount);
@@ -6406,7 +6434,7 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
             brandBadge = '<span class="badge signed" style="font-size:0.75rem">À Vista</span>';
           }
 
-          rowsHtml += '<tr class="' + (isSel ? 'selected' : '') + '" style="cursor:pointer" onclick="selectRateMethod(\\'' + rate.method_code + '\\')">' +
+          rowsHtml += '<tr class="' + (isSel ? 'selected' : '') + '" style="cursor:pointer" onclick="selectRateMethod(\'' + rate.method_code + '\')">' +
             '<td>' + brandBadge + '</td>' +
             '<td><strong>' + rate.label + '</strong></td>' +
             '<td>' + (rate.fee_pct > 0 ? (rate.fee_pct.toFixed(2).replace('.', ',') + '%') : '<span class="badge signed">0%</span>') + '</td>' +
@@ -6428,7 +6456,7 @@ app.get('/admin/simulador', requireAuth, (req, res) => {
         if (selectedRateObj) {
           var selCardFee = gross * (selectedRateObj.fee_pct / 100);
           var selAfterCard = Math.max(0, gross - selCardFee);
-          var selTax = selAfterCard * (taxPct / 100);
+          var selTax = gross * (taxPct / 100);
           var selAfterTax = Math.max(0, selAfterCard - selTax);
           var selClinic = selAfterTax * (clinicPct / 100);
           var selProf = Math.max(0, selAfterTax - selClinic);
@@ -6844,7 +6872,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
       <article class="kpi-card">
         <span>Impostos (6%)</span>
         <strong style="color:#b45309">- R$ ${escapeHtml(formatBRL(totals.total_tax))}</strong>
-        <span style="font-size:0.75rem;margin-top:2px">NF sobre líq. cartão</span>
+        <span style="font-size:0.75rem;margin-top:2px">NF sobre valor bruto</span>
       </article>
 
       <article class="kpi-card" style="border-left: 3px solid #ea580c">
@@ -6933,7 +6961,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
           <div style="padding:8px 12px;border-radius:6px;background:rgba(0,0,0,0.02)">
             <div style="font-size:0.75rem;color:var(--muted)">3. (-) Imposto (6%)</div>
             <div style="font-size:1.05rem;font-weight:700;color:#b45309;margin-top:2px">- R$ ${escapeHtml(formatBRL(totals.total_tax))}</div>
-            <div style="font-size:0.7rem;color:var(--muted)">Sobre líq. cartão</div>
+            <div style="font-size:0.7rem;color:var(--muted)">Sobre valor bruto</div>
           </div>
           <div style="padding:8px 12px;border-radius:6px;background:rgba(154,52,18,0.06);border:1px dashed #ea580c">
             <div style="font-size:0.75rem;color:#9a3412;font-weight:700">4. (-) Clínica (30%)</div>
@@ -7115,7 +7143,7 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
             <div class="step-badge" style="background:#3b82f6">3</div>
             <div class="step-info">
               <div class="step-info-header">
-                <span>(-) Imposto (<span id="mainLiveTaxPct">6.0</span>% pós-cartão)</span>
+                <span>(-) Imposto (<span id="mainLiveTaxPct">6.0</span>% sobre valor bruto)</span>
                 <strong style="color:var(--danger)" id="mainLiveTax">- R$ 0,00</strong>
               </div>
               <div class="step-info-sub">Subtotal após imposto: <strong id="mainLiveAfterTax" style="color:var(--text)">R$ 0,00</strong></div>
@@ -7424,8 +7452,8 @@ app.get('/admin/financeiro', requireAuth, (req, res) => {
         var cardFeeAmount = gross * (cardPct / 100);
         var valueAfterCard = Math.max(0, gross - cardFeeAmount);
 
-        // 2. Imposto de 6% sobre o valor pós-cartão
-        var taxAmount = valueAfterCard * (taxPct / 100);
+        // 2. Imposto (6%) cobrado diretamente sobre o valor bruto faturado
+        var taxAmount = gross * (taxPct / 100);
         var valueAfterTax = Math.max(0, valueAfterCard - taxAmount);
 
         // 3. Repasse da clínica de 30% sobre o valor pós-imposto
