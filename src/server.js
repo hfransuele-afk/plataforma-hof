@@ -2250,6 +2250,37 @@ app.get('/admin/patients', requireAuth, (req, res) => {
     )
     .join('');
 
+  let anamneseAlertHtml = '';
+  if (req.query.newAnamneseToken) {
+    const token = String(req.query.newAnamneseToken);
+    const pId = Number(req.query.newPatientId || 0);
+    const pat = pId ? db.prepare('SELECT * FROM patients WHERE id = ?').get(pId) : null;
+    const anamneseUrl = `${BASE_URL}/paciente/${token}`;
+    const pName = pat ? pat.full_name : 'Paciente';
+    const pPhone = pat ? pat.phone : '';
+    const msg = `Olá ${pName}! Para prepararmos sua consulta da melhor forma, por favor preencha sua ficha de anamnese neste link: ${anamneseUrl}`;
+    const waLink = toWhatsAppLink(pPhone, msg);
+
+    anamneseAlertHtml = `
+      <div class="panel" style="border:2px solid #25d366;background:#f0fdf4;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+          <div>
+            <h3 style="margin:0 0 6px;color:#15803d;font-size:1.15rem">✅ Paciente cadastrada com sucesso!</h3>
+            <p style="margin:0 0 10px;font-size:0.92rem;color:#166534">
+              Ficha de Anamnese criada para <strong>${escapeHtml(pName)}</strong>${pPhone ? ` (${escapeHtml(pPhone)})` : ''}.
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
+              <input type="text" readonly value="${escapeHtml(anamneseUrl)}" id="newAnamneseInput" style="padding:7px 12px;width:340px;border-radius:8px;border:1px solid #86efac;background:#fff;font-size:0.85rem">
+              <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('newAnamneseInput').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar link',2000)">Copiar link</button>
+              ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp da Paciente</a>` : ''}
+              ${pat ? `<a class="btn tiny gold" href="/admin/patients/${pat.id}">📂 Abrir Pasta da Paciente</a>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   const body = `
     <header class="panel header-panel">
       <div>
@@ -2258,9 +2289,14 @@ app.get('/admin/patients', requireAuth, (req, res) => {
       </div>
       <div class="header-actions">
         <a class="btn" href="/admin">Voltar ao painel</a>
-        <a class="btn primary" href="/admin/agenda">Abrir agenda</a>
+        <button type="button" class="btn primary" onclick="document.getElementById('newPatientModal').showModal()">+ Nova Paciente</button>
+        <a class="btn" href="/admin/agenda">Abrir agenda</a>
       </div>
     </header>
+
+    ${anamneseAlertHtml}
+    ${renderAlert(req.query.created && !req.query.newAnamneseToken ? 'Paciente cadastrada com sucesso.' : null, 'success')}
+    ${renderAlert(req.query.error || null, 'error')}
 
     <section class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">
@@ -2298,6 +2334,40 @@ app.get('/admin/patients', requireAuth, (req, res) => {
         </table>
       </div>
     </section>
+
+    <dialog id="newPatientModal" style="border:none;border-radius:16px;padding:0;box-shadow:0 20px 40px rgba(0,0,0,0.25);max-width:500px;width:90%">
+      <div style="background:#fff;padding:24px;border-radius:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+          <h3 style="margin:0;font-size:1.2rem;color:var(--accent)">➕ Cadastrar Nova Paciente</h3>
+          <button type="button" onclick="document.getElementById('newPatientModal').close()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted)">&times;</button>
+        </div>
+        <form method="post" action="/admin/patients/new">
+          <input type="hidden" name="_csrf" value="${escapeHtml(req.session.csrfToken)}">
+          <div class="field" style="margin-bottom:14px">
+            <span style="font-weight:600;font-size:0.9rem">Nome Completo *</span>
+            <input type="text" name="full_name" required placeholder="Ex.: Mariana Oliveira" style="width:100%;box-sizing:border-box">
+          </div>
+          <div class="field" style="margin-bottom:14px">
+            <span style="font-weight:600;font-size:0.9rem">WhatsApp / Telefone</span>
+            <input type="tel" name="phone" placeholder="(51) 99764-7638" style="width:100%;box-sizing:border-box">
+          </div>
+          <div class="field" style="margin-bottom:14px">
+            <span style="font-weight:600;font-size:0.9rem">E-mail</span>
+            <input type="email" name="email" placeholder="mariana@exemplo.com" style="width:100%;box-sizing:border-box">
+          </div>
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:12px 14px;border-radius:10px;margin-bottom:18px">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin:0;font-size:0.92rem;font-weight:600;color:#166534">
+              <input type="checkbox" name="generateAnamnese" value="1" checked style="width:18px;height:18px">
+              <span>Gerar link da Ficha de Anamnese agora</span>
+            </label>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:10px">
+            <button type="button" class="btn" onclick="document.getElementById('newPatientModal').close()">Cancelar</button>
+            <button type="submit" class="btn primary">Salvar e Gerar Link</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
 
     <script>
       function filterPatients(term) {
@@ -2351,6 +2421,54 @@ app.get('/admin/patients', requireAuth, (req, res) => {
   `;
 
   res.send(layout({ title: 'Pacientes', body, userEmail: req.session.adminEmail }));
+});
+
+app.post('/admin/patients/new', requireAuth, (req, res) => {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF inválido.');
+    return;
+  }
+
+  const fullName = String(req.body.full_name || req.body.newPatientName || '').trim();
+  const phone = String(req.body.phone || req.body.newPatientPhone || '').trim();
+  const email = String(req.body.email || req.body.newPatientEmail || '').trim();
+  const generateAnamnese = req.body.generateAnamnese === 'on' || req.body.generateAnamnese === '1';
+
+  if (!fullName) {
+    const errorMsg = 'Nome da paciente é obrigatório.';
+    if (req.body.returnTo === 'agenda') {
+      res.redirect(`/admin/agenda?error=${encodeURIComponent(errorMsg)}`);
+    } else {
+      res.redirect(`/admin/patients?error=${encodeURIComponent(errorMsg)}`);
+    }
+    return;
+  }
+
+  const patientId = getOrCreatePatientFromPayload({
+    nomeCompleto: fullName,
+    telefone: phone,
+    email: email
+  });
+
+  const patient = db.prepare('SELECT id, full_name, phone, email FROM patients WHERE id = ?').get(patientId);
+
+  let anamneseQuery = '';
+  if (generateAnamnese && patient) {
+    const token = crypto.randomBytes(18).toString('hex');
+    db.prepare(
+      `
+        INSERT INTO patient_links (token, patient_id, patient_name_hint, patient_email_hint, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `
+    ).run(token, patient.id, patient.full_name, patient.email, nowIso());
+    anamneseQuery = `&newAnamneseToken=${encodeURIComponent(token)}&newPatientId=${patient.id}`;
+  }
+
+  if (req.body.returnTo === 'agenda') {
+    res.redirect(`/admin/agenda?created_patient=1${anamneseQuery}`);
+  } else {
+    res.redirect(`/admin/patients?created=1${anamneseQuery}`);
+  }
 });
 
 app.get('/admin/patients/:id', requireAuth, (req, res) => {
@@ -4286,14 +4404,18 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
     const anamneseUrl = `${BASE_URL}/paciente/${token}`;
     const pName = pat ? pat.full_name : 'Paciente';
     const pPhone = pat ? pat.phone : '';
-    const msg = `Olá ${pName}! Confirmamos o seu agendamento. Para prepararmos sua consulta da melhor forma, por favor preencha sua ficha de anamnese neste link: ${anamneseUrl}`;
+    const isPatientOnly = req.query.created_patient;
+    const titleText = isPatientOnly ? '✅ Paciente cadastrada com sucesso!' : '✅ Consulta agendada com sucesso!';
+    const msg = isPatientOnly
+      ? `Olá ${pName}! Para prepararmos sua consulta da melhor forma, por favor preencha sua ficha de anamnese neste link: ${anamneseUrl}`
+      : `Olá ${pName}! Confirmamos o seu agendamento. Para prepararmos sua consulta da melhor forma, por favor preencha sua ficha de anamnese neste link: ${anamneseUrl}`;
     const waLink = toWhatsAppLink(pPhone, msg);
 
     anamneseAlertHtml = `
       <div class="panel" style="border:2px solid #25d366;background:#f0fdf4;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
           <div>
-            <h3 style="margin:0 0 6px;color:#15803d;font-size:1.15rem">✅ Consulta agendada com sucesso!</h3>
+            <h3 style="margin:0 0 6px;color:#15803d;font-size:1.15rem">${titleText}</h3>
             <p style="margin:0 0 10px;font-size:0.92rem;color:#166534">
               Ficha de Anamnese criada para <strong>${escapeHtml(pName)}</strong>${pPhone ? ` (${escapeHtml(pPhone)})` : ''}.
             </p>
@@ -4322,6 +4444,7 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
     </header>
 
     ${anamneseAlertHtml}
+    ${renderAlert(req.query.created_patient && !req.query.newAnamneseToken ? 'Paciente cadastrada com sucesso.' : null, 'success')}
     ${renderAlert(req.query.created && !req.query.newAnamneseToken ? 'Consulta agendada com sucesso.' : null, 'success')}
     ${renderAlert(req.query.error || null, 'error')}
 
@@ -4706,22 +4829,30 @@ app.get('/admin/agenda', requireAuth, (req, res) => {
               <input type="email" name="newPatientEmail" placeholder="mariana@email.com">
             </label>
           </div>
+          <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span style="font-size:0.84rem;color:var(--muted)">💡 Deseja apenas registrar a paciente e enviar a anamnese sem agendar data agora?</span>
+            <button type="submit" formaction="/admin/patients/new" formnovalidate name="returnTo" value="agenda" class="btn secondary tiny" style="font-weight:600">
+              ⚡ Apenas cadastrar paciente e gerar link de anamnese (sem agendar)
+            </button>
+          </div>
         </div>
 
-        <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:4px 0 10px">
-          <input type="checkbox" name="generateAnamnese" value="1" checked>
-          <span><strong>Gerar link da Ficha de Anamnese</strong> (prepara link e mensagem de WhatsApp automaticamente)</span>
-        </label>
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px 14px;margin:10px 0 14px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin:0;font-size:0.92rem;font-weight:600;color:#166534">
+            <input type="checkbox" name="generateAnamnese" value="1" checked style="width:18px;height:18px;margin:0;cursor:pointer">
+            <span>Gerar link da Ficha de Anamnese (prepara link e mensagem de WhatsApp automaticamente)</span>
+          </label>
+        </div>
 
         <label class="field">
           <span>Título / Procedimento</span>
-          <input type="text" name="title" placeholder="Ex.: Avaliação + Consulta de retorno" required>
+          <input type="text" name="title" placeholder="Ex.: Avaliação + Consulta de retorno">
         </label>
         <div class="field">
           <span>Início</span>
           <div class="date-time-pair">
-            <input type="date" name="startDate" required>
-            <input type="time" name="startTime" required>
+            <input type="date" name="startDate">
+            <input type="time" name="startTime">
           </div>
         </div>
         <div class="field">
@@ -4775,17 +4906,6 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
     });
   }
 
-  const title = String(req.body.title || '').trim();
-  const startAt = combineDateTime(req.body.startDate, req.body.startTime);
-  const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
-  const notes = String(req.body.notes || '').trim() || null;
-  const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
-
-  if (!title || !startAt) {
-    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha título e horário de início.')}`);
-    return;
-  }
-
   let patient = null;
   if (resolvedPatientId) {
     patient = db.prepare('SELECT id, full_name, phone, email FROM patients WHERE id = ?').get(resolvedPatientId);
@@ -4793,6 +4913,34 @@ app.post('/admin/agenda', requireAuth, (req, res) => {
       res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Paciente inválida para agendamento.')}`);
       return;
     }
+  }
+
+  const title = String(req.body.title || '').trim();
+  const startAt = combineDateTime(req.body.startDate, req.body.startTime);
+  const endAt = combineDateTime(req.body.endDate, req.body.endTime) || null;
+  const notes = String(req.body.notes || '').trim() || null;
+  const value = parseFloat(String(req.body.value || '').replace(',', '.')) || null;
+
+  // Se for nova paciente e não informou horário de consulta, apenas cadastra e gera o link de anamnese
+  if (isNewPatient && (!title || !startAt)) {
+    let anamneseQuery = '';
+    if (generateAnamnese && resolvedPatientId && patient) {
+      const token = crypto.randomBytes(18).toString('hex');
+      db.prepare(
+        `
+          INSERT INTO patient_links (token, patient_id, patient_name_hint, patient_email_hint, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `
+      ).run(token, resolvedPatientId, patient.full_name, patient.email, nowIso());
+      anamneseQuery = `&newAnamneseToken=${encodeURIComponent(token)}&newPatientId=${resolvedPatientId}`;
+    }
+    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&created_patient=1${anamneseQuery}`);
+    return;
+  }
+
+  if (!title || !startAt) {
+    res.redirect(`/admin/agenda?month=${encodeURIComponent(redirectMonth)}&error=${encodeURIComponent('Preencha título e horário de início da consulta.')}`);
+    return;
   }
 
   db.prepare(

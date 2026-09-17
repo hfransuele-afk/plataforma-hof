@@ -518,7 +518,7 @@ legend {
   }
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
   width: 100%;
@@ -529,6 +529,22 @@ textarea {
   font-size: 0.96rem;
   background: #fffdf9;
   color: var(--text);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  cursor: pointer;
+  accent-color: var(--accent);
+  box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 textarea {
