@@ -2109,24 +2109,31 @@ ${escapeHtml(termText)}
       let hasDrawn = false;
 
       function resizeCanvas() {
-        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        if (hasDrawn) return;
         const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
         canvas.width = rect.width * ratio;
-        canvas.height = 170 * ratio;
+        canvas.height = rect.height * ratio;
         ctx.scale(ratio, ratio);
-        ctx.lineWidth = 2.2;
+        ctx.lineWidth = 2.4;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.strokeStyle = '#2c231e';
       }
 
       window.addEventListener('resize', resizeCanvas);
-      setTimeout(resizeCanvas, 50);
+      window.addEventListener('DOMContentLoaded', resizeCanvas);
+      setTimeout(resizeCanvas, 60);
 
       function getPos(e) {
         const r = canvas.getBoundingClientRect();
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        let clientX = e.clientX;
+        let clientY = e.clientY;
+        if (e.touches && e.touches.length > 0) {
+          clientX = e.touches[0].clientX;
+          clientY = e.touches[0].clientY;
+        }
         return { x: clientX - r.left, y: clientY - r.top };
       }
 
@@ -2136,7 +2143,7 @@ ${escapeHtml(termText)}
         const pos = getPos(e);
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
-        if (e.touches) e.preventDefault();
+        if (e.cancelable) e.preventDefault();
       }
 
       function draw(e) {
@@ -2144,7 +2151,7 @@ ${escapeHtml(termText)}
         const pos = getPos(e);
         ctx.lineTo(pos.x, pos.y);
         ctx.stroke();
-        if (e.touches) e.preventDefault();
+        if (e.cancelable) e.preventDefault();
       }
 
       function stopDraw() {
@@ -2153,13 +2160,23 @@ ${escapeHtml(termText)}
         ctx.closePath();
       }
 
-      canvas.addEventListener('mousedown', startDraw);
-      canvas.addEventListener('mousemove', draw);
-      window.addEventListener('mouseup', stopDraw);
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', function(e) {
+          try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+          startDraw(e);
+        });
+        canvas.addEventListener('pointermove', draw);
+        canvas.addEventListener('pointerup', stopDraw);
+        canvas.addEventListener('pointercancel', stopDraw);
+      } else {
+        canvas.addEventListener('mousedown', startDraw);
+        canvas.addEventListener('mousemove', draw);
+        window.addEventListener('mouseup', stopDraw);
 
-      canvas.addEventListener('touchstart', startDraw, { passive: false });
-      canvas.addEventListener('touchmove', draw, { passive: false });
-      window.addEventListener('touchend', stopDraw);
+        canvas.addEventListener('touchstart', startDraw, { passive: false });
+        canvas.addEventListener('touchmove', draw, { passive: false });
+        window.addEventListener('touchend', stopDraw);
+      }
 
       function clearTermCanvas() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -2179,6 +2196,19 @@ ${escapeHtml(termText)}
   `;
 
   res.send(layout({ title: `Termo — ${consent.procedure_name}`, body }));
+});
+
+// Alias /term/:token -> /termo/:token
+app.get('/term/:token', (req, res) => {
+  res.redirect(301, `/termo/${encodeURIComponent(req.params.token || '')}`);
+});
+
+app.post('/term/:token', (req, res) => {
+  res.redirect(307, `/termo/${encodeURIComponent(req.params.token || '')}`);
+});
+
+app.get(['/term', '/termo'], (_req, res) => {
+  res.redirect('/admin/patients');
 });
 
 app.post('/termo/:token', (req, res) => {
@@ -2984,11 +3014,15 @@ app.get('/admin/patients/:id', requireAuth, (req, res) => {
                   <p style="margin:0 0 8px;font-size:0.83rem;color:var(--muted)">
                     Link gerado para a paciente assinar no celular ou tablet:
                   </p>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-                    <input type="text" readonly value="${escapeHtml(termUrl)}" id="termInput-${c.id}" style="padding:6px 8px;width:200px;font-size:0.75rem;border-radius:6px;border:1px solid var(--line);background:#fff">
-                    <button type="button" class="btn tiny" onclick="navigator.clipboard.writeText(document.getElementById('termInput-${c.id}').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar Link',2000)">Copiar Link</button>
-                    ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>` : ''}
-                    <a class="btn tiny ghost" href="${escapeHtml(termUrl)}" target="_blank" rel="noopener" title="Abrir para assinar presencialmente no consultório">📱 Assinar na Clínica</a>
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input type="text" readonly value="${escapeHtml(termUrl)}" id="termInput-${c.id}" onclick="this.select()" style="padding:7px 10px;width:100%;font-size:0.8rem;border-radius:8px;border:1px solid var(--line);background:#fff;box-sizing:border-box">
+                      <button type="button" class="btn tiny" style="white-space:nowrap" onclick="navigator.clipboard.writeText(document.getElementById('termInput-${c.id}').value);this.textContent='Copiado!';setTimeout(()=>this.textContent='Copiar Link',2000)">Copiar Link</button>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                      ${waLink ? `<a class="btn tiny whatsapp" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>` : ''}
+                      <a class="btn tiny ghost" href="${escapeHtml(termUrl)}" target="_blank" rel="noopener" title="Abrir para assinar presencialmente no consultório">📱 Assinar na Clínica</a>
+                    </div>
                   </div>
                 `}
               </div>
@@ -4091,8 +4125,8 @@ app.post('/admin/patients/:id/consents/:consentId/delete', requireAuth, (req, re
   if (!verifyCsrf(req)) { res.status(403).send('CSRF inválido.'); return; }
   const patientId = Number(req.params.id);
   const consentId = Number(req.params.consentId);
-  const consent = db.prepare('SELECT id, status, is_signed FROM patient_consents WHERE id = ? AND patient_id = ?').get(consentId, patientId);
-  if (consent && (consent.is_signed || consent.status === 'signed')) {
+  const consent = db.prepare('SELECT id, status FROM patient_consents WHERE id = ? AND patient_id = ?').get(consentId, patientId);
+  if (consent && consent.status === 'signed') {
     res.status(400).send('Termos assinados não podem ser excluídos devido à guarda legal obrigatória (mínimo de 5 anos conforme CFO/CFM/LGPD).');
     return;
   }
